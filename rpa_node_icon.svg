@@ -1,0 +1,56 @@
+<svg width="60" height="60" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background circle with gradient -->
+  <defs>
+    <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#4A90E2;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#357ABD;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="robotGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#FFFFFF;stop-opacity:0.9" />
+      <stop offset="100%" style="stop-color:#E8F4FD;stop-opacity:0.8" />
+    </linearGradient>
+  </defs>
+  
+  <!-- Main background -->
+  <circle cx="30" cy="30" r="28" fill="url(#bgGradient)" stroke="#2C5F8A" stroke-width="2"/>
+  
+  <!-- Browser window frame -->
+  <rect x="12" y="15" width="36" height="28" rx="3" ry="3" fill="url(#robotGradient)" stroke="#2C5F8A" stroke-width="1.5"/>
+  
+  <!-- Browser header bar -->
+  <rect x="12" y="15" width="36" height="8" rx="3" ry="3" fill="#357ABD"/>
+  <rect x="12" y="19" width="36" height="4" fill="#357ABD"/>
+  
+  <!-- Browser control dots -->
+  <circle cx="17" cy="19" r="1.5" fill="#FF5F57"/>
+  <circle cx="22" cy="19" r="1.5" fill="#FFBD2E"/>
+  <circle cx="27" cy="19" r="1.5" fill="#28CA42"/>
+  
+  <!-- Robot/automation symbol in browser -->
+  <g transform="translate(30, 32)">
+    <!-- Robot head -->
+    <rect x="-6" y="-8" width="12" height="10" rx="2" ry="2" fill="#2C5F8A" stroke="#FFFFFF" stroke-width="0.8"/>
+    
+    <!-- Robot eyes -->
+    <circle cx="-3" cy="-5" r="1.5" fill="#4A90E2"/>
+    <circle cx="3" cy="-5" r="1.5" fill="#4A90E2"/>
+    
+    <!-- Robot body -->
+    <rect x="-5" y="2" width="10" height="8" rx="1" ry="1" fill="#2C5F8A" stroke="#FFFFFF" stroke-width="0.8"/>
+    
+    <!-- Robot arms -->
+    <rect x="-8" y="3" width="3" height="6" rx="1.5" ry="1.5" fill="#2C5F8A"/>
+    <rect x="5" y="3" width="3" height="6" rx="1.5" ry="1.5" fill="#2C5F8A"/>
+  </g>
+  
+  <!-- Automation arrows/flow indicators -->
+  <g transform="translate(22, 25)" opacity="0.7">
+    <path d="M0,0 L4,0 M2,-2 L4,0 L2,2" stroke="#FFFFFF" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+  </g>
+  <g transform="translate(32, 25)" opacity="0.7">
+    <path d="M0,0 L4,0 M2,-2 L4,0 L2,2" stroke="#FFFFFF" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+  </g>
+  
+  <!-- Bottom accent -->
+  <path d="M15,45 Q30,50 45,45" stroke="#FFFFFF" stroke-width="2" fill="none" opacity="0.3"/>
+</svg>
