@@ -29,7 +29,8 @@
     "nodes": [
       "dist/nodes/browser/LaunchBrowser.node.js",
       "dist/nodes/browser/Navigate.node.js",
-      "dist/nodes/browser/CloseBrowser.node.js"
+      "dist/nodes/browser/CloseBrowser.node.js",
+      "dist/nodes/browser/FindElementByDescription.node.js"
     ]
   }
 }
