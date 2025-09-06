@@ -10,7 +10,9 @@
     "resolveJsonModule": true,
     "forceConsistentCasingInFileNames": true,
     "noImplicitAny": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+		"types": ["node"],
+    "moduleResolution": "node"
   },
   "include": [
     "nodes/**/*",
