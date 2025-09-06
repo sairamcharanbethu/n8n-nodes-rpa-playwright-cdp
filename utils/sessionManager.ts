@@ -1,5 +1,5 @@
 import playwright, { Browser } from 'playwright';
-import http, { RequestOptions } from 'http';
+import http, { RequestOptions, IncomingMessage } from 'http';
 import { URL } from 'url';
 import { SessionObject } from './SessionObject';
 
@@ -30,9 +30,12 @@ function reqJSON(
       headers: { 'Content-Type': 'application/json' },
       timeout: 30000,
     };
-    const req = http.request(options, (res) => {
+
+    const req = http.request(options, (res: IncomingMessage) => {
       let data = '';
-      res.on('data', (chunk) => (data += chunk));
+      res.on('data', (chunk: Buffer) => {
+        data += chunk.toString();
+      });
       res.on('end', () => {
         try {
           resolve({
@@ -44,8 +47,10 @@ function reqJSON(
         }
       });
     });
+
     req.on('error', reject);
     req.on('timeout', () => req.destroy(new Error('Request timeout')));
+
     if (body) req.write(JSON.stringify(body));
     req.end();
   });
@@ -54,6 +59,7 @@ function reqJSON(
 export async function launchGoogleSession(params: LaunchBrowserParams): Promise<SessionObject> {
   let sessionId: string | null = null;
   let browser: Browser | null = null;
+
   try {
     const browserArgs = [
       `--user-data-dir=${params.profileDir}`,
@@ -64,16 +70,17 @@ export async function launchGoogleSession(params: LaunchBrowserParams): Promise<
       ...(params.browserArgs || []),
       '--remote-debugging-port=0',
     ];
+
     const sessionResp = await reqJSON('POST', `${params.seleniumHubUrl}/session`, {
       capabilities: {
         alwaysMatch: {
           browserName: 'chrome',
           'goog:chromeOptions': {
             args: browserArgs,
-          }
+          },
         },
-        firstMatch: [{}]
-      }
+        firstMatch: [{}],
+      },
     });
 
     sessionId = sessionResp.data.value?.sessionId;
@@ -81,7 +88,7 @@ export async function launchGoogleSession(params: LaunchBrowserParams): Promise<
     const cdpUrl = capabilities['se:cdp'] as string;
 
     browser = await playwright.chromium.connectOverCDP(cdpUrl);
-    const context = browser.contexts()[0] || await browser.newContext();
+    const context = browser.contexts()[0] || (await browser.newContext());
     const page = await context.newPage();
 
     await page.goto(params.navigateUrl, {
@@ -126,7 +133,7 @@ export async function navigateWithSession(
   let browser: Browser | null = null;
   try {
     browser = await playwright.chromium.connectOverCDP(session.cdpUrl);
-    const context = browser.contexts()[0] || await browser.newContext();
+    const context = browser.contexts()[0] || (await browser.newContext());
     const page = context.pages().length ? context.pages()[0] : await context.newPage();
 
     await page.goto(navigateUrl, {
@@ -158,9 +165,7 @@ export async function navigateWithSession(
   }
 }
 
-export async function closeSession(
-  session: SessionObject
-): Promise<SessionObject> {
+export async function closeSession(session: SessionObject): Promise<SessionObject> {
   try {
     await reqJSON('DELETE', `${session.seleniumHubUrl}/session/${session.sessionId}`);
     return {
