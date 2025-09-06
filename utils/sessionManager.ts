@@ -1,5 +1,6 @@
 import playwright, { Browser } from 'playwright';
 import http, { RequestOptions } from 'http';
+import { URL } from 'url';
 import { SessionObject } from './SessionObject';
 
 export interface LaunchBrowserParams {
