@@ -1,4 +1,11 @@
-import { INodeType, INodeTypeDescription, IExecuteFunctions, INodeExecutionData } from 'n8n-workflow';
+import {
+  INodeType,
+  INodeTypeDescription,
+  IExecuteFunctions,
+  INodeExecutionData,
+  NodeConnectionType,
+  INodeProperties,
+} from 'n8n-workflow';
 import { chromium, Browser } from 'playwright';
 import { SessionObject } from '../../utils/SessionObject';
 
@@ -12,8 +19,8 @@ export class FindElementByDescription implements INodeType {
     defaults: {
       name: 'Find Element',
     },
-    inputs: ['main'],
-    outputs: ['main'],
+    inputs: [NodeConnectionType.Main],
+    outputs: [NodeConnectionType.Main],
     properties: [
       {
         displayName: 'Element Description',
@@ -38,7 +45,7 @@ export class FindElementByDescription implements INodeType {
       {
         displayName: 'AI Credential',
         name: 'aiCredential',
-        type: 'credential',
+        type: 'credentials',
         default: '',
         required: true,
       },
@@ -65,7 +72,8 @@ export class FindElementByDescription implements INodeType {
     const results: INodeExecutionData[] = [];
 
     for (let i = 0; i < items.length; i++) {
-      const session = items[i].json as SessionObject;
+      // Cast through unknown to squash type mismatch for custom session objects
+      const session = items[i].json as unknown as SessionObject;
       const description = this.getNodeParameter('description', i) as string;
       const aiProvider = this.getNodeParameter('aiProvider', i) as string;
       const aiCredential = this.getNodeParameter('aiCredential', i, '') as string;
@@ -113,7 +121,7 @@ Respond strictly in JSON:
   "reasoning": "<Why this selector>",
   "alternatives": ["<other selectors, if any>"]
 }
-`.trim();
+        `.trim();
 
         let aiResponse, parsed: any = {};
         try {
@@ -155,7 +163,7 @@ Respond strictly in JSON:
             const content = aiResponse.choices?.[0]?.message?.content ?? aiResponse;
             parsed = typeof content === 'string' ? JSON.parse(content) : content;
           }
-          // Add further providers here as needed
+          // Add more providers here as needed
 
           selector = parsed.selector || '';
           confidence = parsed.confidence || 0;
