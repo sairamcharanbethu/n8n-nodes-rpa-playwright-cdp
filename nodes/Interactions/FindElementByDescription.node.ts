@@ -42,13 +42,28 @@ export class FindElementByDescription implements INodeType {
         default: 'openaiApi',
         required: true,
       },
-      {
-        displayName: 'AI Credential',
-        name: 'aiCredential',
-        type: 'credentials',
-        default: '',
-        required: true,
-      },
+			{
+  displayName: 'AI Credential',
+  name: 'aiCredential',
+  type: 'credentials',
+  options: [
+    {
+      name: 'OpenAI API',
+      value: 'openApi',
+    },
+    {
+      name: 'OpenRouter API',
+      value: 'openrouterApi',
+    },
+    {
+      name: 'Google Gemini API',
+      value: 'googleGeminiApi',
+    }
+    // Add more as you define credential definitions in your n8n environment
+  ],
+  required: true,
+  default: 'openApi'
+},
       {
         displayName: 'Model Name',
         name: 'model',
