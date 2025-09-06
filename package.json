@@ -10,6 +10,7 @@
   },
   "scripts": {
     "build": "tsc && gulp build:icons",
+    "clean": "rm -rf dist/",
     "dev": "tsc --watch",
     "prettier": "prettier nodes utils --write",
     "lint": "eslint nodes utils package.json",
@@ -31,7 +32,7 @@
       "dist/nodes/browser/LaunchBrowser.node.js",
       "dist/nodes/browser/Navigate.node.js",
       "dist/nodes/browser/CloseBrowser.node.js",
-      "dist/nodes/browser/FindElementByDescription.node.js"
+      "dist/nodes/Interactions/FindElementByDescription.node.js"
     ]
   }
 }
