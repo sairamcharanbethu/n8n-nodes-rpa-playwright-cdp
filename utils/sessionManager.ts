@@ -1,5 +1,5 @@
 import playwright, { Browser } from 'playwright';
-import http, { RequestOptions } from 'http';
+import https, { RequestOptions } from 'https';
 import { SessionObject } from './SessionObject';
 
 export interface LaunchBrowserParams {
@@ -29,7 +29,7 @@ function reqJSON(
       headers: { 'Content-Type': 'application/json' },
       timeout: 30000,
     };
-    const req = http.request(options, (res) => {
+    const req = https.request(options, (res) => {
       let data = '';
       res.on('data', (chunk) => (data += chunk));
       res.on('end', () => {
