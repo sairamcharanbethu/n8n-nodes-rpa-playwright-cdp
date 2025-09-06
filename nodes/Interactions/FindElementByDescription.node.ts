@@ -8,31 +8,38 @@ import {
 import { chromium, Browser } from 'playwright';
 import { SessionObject } from '../../utils/SessionObject';
 
+// Map your human provider selection to the actual credential name/type in n8n
+const CREDENTIAL_MAP: Record<string, string> = {
+  openai: 'openAiApi',         // Common n8n built-in type for OpenAI
+  openrouter: 'openrouterApi', // Your custom or community credential for OpenRouter
+  gemini: 'googleGeminiApi',   // Your custom or community credential for Google Gemini
+};
+
 export class FindElementByDescription implements INodeType {
   description: INodeTypeDescription = {
     displayName: 'Find Element By Description (AI)',
     name: 'findElementByDescription',
     group: ['transform'],
     version: 1,
-    description:
-      'Uses an LLM to find a reliable selector for a described element on the current page. Supports OpenAI, OpenRouter, Gemini.',
+    description: 'Uses an LLM to find a reliable selector for a described element on the current page.',
     defaults: { name: 'Find Element' },
-    // Must be NodeConnectionType for latest n8n
     inputs: [NodeConnectionType.Main],
     outputs: [NodeConnectionType.Main],
+
+    // List all credential types your node supports here:
     credentials: [
-      // This enables the credential selector button at the top
-      { name: 'openaiApi', required: false },
+      { name: 'openAiApi', required: false },
       { name: 'openrouterApi', required: false },
       { name: 'googleGeminiApi', required: false },
     ],
+
     properties: [
       {
         displayName: 'Element Description',
         name: 'description',
         type: 'string',
         default: '',
-        placeholder: 'e.g. blue submit button at bottom right',
+        placeholder: 'E.g. "blue submit button in signup form"',
         required: true,
       },
       {
@@ -40,11 +47,11 @@ export class FindElementByDescription implements INodeType {
         name: 'aiProvider',
         type: 'options',
         options: [
-          { name: 'OpenAI', value: 'openaiApi' },
-          { name: 'OpenRouter', value: 'openrouterApi' },
-          { name: 'Google Gemini', value: 'googleGeminiApi' },
+          { name: 'OpenAI', value: 'openai' },
+          { name: 'OpenRouter', value: 'openrouter' },
+          { name: 'Gemini', value: 'gemini' },
         ],
-        default: 'openaiApi',
+        default: 'openai',
         required: true,
       },
       {
@@ -60,7 +67,7 @@ export class FindElementByDescription implements INodeType {
         name: 'maxAttempts',
         type: 'number',
         default: 3,
-        description: 'Try this many times with the AI before failing',
+        description: 'Number of AI retries before failing',
       },
     ],
   };
@@ -76,11 +83,11 @@ export class FindElementByDescription implements INodeType {
       const model = this.getNodeParameter('model', i) as string;
       const maxAttempts = this.getNodeParameter('maxAttempts', i, 3) as number;
 
-      // --- Pick credentials from node config (via top credential picker button)
-      let credentialType = aiProvider; // 'openaiApi' | 'openrouterApi' | 'googleGeminiApi'
+      // Lookup the credential type name (as entered in n8n's Credentials tab):
+      const credentialType = CREDENTIAL_MAP[aiProvider];
       if (!this.getCredentials(credentialType)) {
         throw new Error(
-          `No credential found! Please use the "Select Credentials" button to attach an ${aiProvider} credential.`,
+          `No credential found! Click "Select credentials" and attach a ${aiProvider} credential.`
         );
       }
 
@@ -88,7 +95,7 @@ export class FindElementByDescription implements INodeType {
         throw new Error('Session object missing cdpUrl.');
       }
 
-      // --- Connect to browser and get live HTML ---
+      // --- Use Playwright to connect and extract current cleaned HTML ---
       let browser: Browser | null = null;
       let pageHTML = '';
       try {
@@ -107,17 +114,17 @@ export class FindElementByDescription implements INodeType {
         throw new Error('Could not connect to browser/obtain HTML: ' + (e as Error).message);
       }
 
-      // --- Prompt and parse AI response ---
+      // --- AI request/response logic ---
       let attempts = 0,
         selector = '',
         confidence = 0,
         reasoning = '',
         alternatives: string[] = [];
+
       while (attempts < maxAttempts && !selector) {
         attempts++;
-
         const prompt = `
-You are an RPA agent. Given this HTML, find the best CSS selector for the element described: "${description}"
+You are an RPA agent. Given this HTML, find the best CSS selector for the element described as: "${description}"
 
 HTML:
 ${pageHTML.slice(0, 35000)}
@@ -133,10 +140,10 @@ Respond strictly in JSON:
 
         let aiResponse, parsed: any = {};
         try {
-          if (aiProvider === 'openaiApi') {
+          if (credentialType === 'openAiApi') {
             aiResponse = await this.helpers.httpRequestWithAuthentication.call(
               this,
-              aiProvider,
+              credentialType,
               {
                 method: 'POST',
                 url: 'https://api.openai.com/v1/chat/completions',
@@ -147,14 +154,14 @@ Respond strictly in JSON:
                   max_tokens: 400,
                 },
                 json: true,
-              },
+              }
             );
             const content = aiResponse.choices?.[0]?.message?.content ?? aiResponse;
             parsed = typeof content === 'string' ? JSON.parse(content) : content;
-          } else if (aiProvider === 'openrouterApi') {
+          } else if (credentialType === 'openrouterApi') {
             aiResponse = await this.helpers.httpRequestWithAuthentication.call(
               this,
-              aiProvider,
+              credentialType,
               {
                 method: 'POST',
                 url: 'https://openrouter.ai/api/v1/chat/completions',
@@ -165,31 +172,30 @@ Respond strictly in JSON:
                   max_tokens: 400,
                 },
                 json: true,
-              },
+              }
             );
             const content = aiResponse.choices?.[0]?.message?.content ?? aiResponse;
             parsed = typeof content === 'string' ? JSON.parse(content) : content;
-          } else if (aiProvider === 'googleGeminiApi') {
+          } else if (credentialType === 'googleGeminiApi') {
             aiResponse = await this.helpers.httpRequestWithAuthentication.call(
               this,
-              aiProvider,
+              credentialType,
               {
                 method: 'POST',
-                url: 'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent',
+                url: 'https://generativelanguage.googleapis.com/v1beta/models/' +
+                  model +
+                  ':generateContent',
                 body: {
-                  contents: [
-                    { parts: [{ text: prompt }] },
-                  ],
+                  contents: [{ parts: [{ text: prompt }] }],
                 },
                 json: true,
-              },
+              }
             );
-            // Gemini-style parsing: pick the first candidate, extract text, parse as JSON
+            // Gemini's response style
             const geminiContent =
               aiResponse?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
             parsed = typeof geminiContent === 'string' ? JSON.parse(geminiContent) : geminiContent;
           }
-
           selector = parsed.selector || '';
           confidence = parsed.confidence || 0;
           reasoning = parsed.reasoning || '';
