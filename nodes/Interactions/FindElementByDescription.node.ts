@@ -186,10 +186,10 @@ Respond strictly in JSON:
 
           if (aiProvider === 'gemini') {
             const geminiContent = aiResponse.data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-            parsed = typeof geminiContent === 'string' ? this.parseAiJson(geminiContent) : geminiContent;
+            parsed = typeof geminiContent === 'string' ? parseAiJson(geminiContent) : geminiContent;
           } else {
             const content = aiResponse.data.choices?.[0]?.message?.content ?? aiResponse.data.choices?.[0]?.text ?? '';
-            parsed = typeof content === 'string' ? this.parseAiJson(content) : content;
+            parsed = typeof content === 'string' ? parseAiJson(content) : content;
           }
 
           selector = parsed.selector || '';
