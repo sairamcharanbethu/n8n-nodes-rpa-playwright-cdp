@@ -46,6 +46,12 @@ export class FindElementByDescription implements INodeType {
 					{ name: 'Textarea', value: 'textarea' },
 					{ name: 'Div / Container', value: 'div' },
 					{ name: 'Link / Anchor', value: 'a' },
+					{ name: 'Image', value: 'img' },
+					{ name: 'Span', value: 'span' },
+					{ name: 'Paragraph', value: 'p' },
+					{ name: 'Heading', value: 'h1,h2,h3,h4,h5,h6' },
+					{ name: 'Table', value: 'table' },
+					{ name: 'Other', value: '*' },
 				],
 				default: 'input',
 				description: 'Select the type of element to find for semantic validation',
@@ -163,7 +169,68 @@ export class FindElementByDescription implements INodeType {
         reasoning = '',
         alternatives: string[] = [],
         validated = false;
+			function getRelevantHTMLByType(html: string, elementType: string, maxLength = 35000): string {
+						let relevant = '';
 
+						switch (elementType.toLowerCase()) {
+							case 'input':
+								relevant = html.match(/<input[^>]*>/gi)?.join('\n') || '';
+								break;
+							case 'button':
+								relevant = html.match(/<button[^>]*>[\s\S]*?<\/button>/gi)?.join('\n') || '';
+								break;
+							case 'select':
+								relevant = html.match(/<select[^>]*>[\s\S]*?<\/select>/gi)?.join('\n') || '';
+								break;
+							case 'checkbox':
+								relevant = html.match(/<input[^>]*type=["']?checkbox["']?[^>]*>/gi)?.join('\n') || '';
+								break;
+							case 'radio':
+								relevant = html.match(/<input[^>]*type=["']?radio["']?[^>]*>/gi)?.join('\n') || '';
+								break;
+							case 'textarea':
+								relevant = html.match(/<textarea[^>]*>[\s\S]*?<\/textarea>/gi)?.join('\n') || '';
+								break;
+							case 'div':
+								relevant = html.match(/<div[^>]*>[\s\S]*?<\/div>/gi)?.join('\n') || '';
+								break;
+							case 'a':
+								relevant = html.match(/<a[^>]*>[\s\S]*?<\/a>/gi)?.join('\n') || '';
+								break;
+							case 'img':
+								relevant = html.match(/<img[^>]*>/gi)?.join('\n') || '';
+								break;
+							case 'span':
+								relevant = html.match(/<span[^>]*>[\s\S]*?<\/span>/gi)?.join('\n') || '';
+								break;
+							case 'p':
+								relevant = html.match(/<p[^>]*>[\s\S]*?<\/p>/gi)?.join('\n') || '';
+								break;
+							case 'h1,h2,h3,h4,h5,h6':
+								relevant = html.match(/<h[1-6][^>]*>[\s\S]*?<\/h[1-6]>/gi)?.join('\n') || '';
+								break;
+							case 'table':
+								relevant = html.match(/<table[^>]*>[\s\S]*?<\/table>/gi)?.join('\n') || '';
+								break;
+							case '*': // "Other"
+								relevant = html; // full HTML, no filtering
+								break;
+							default:
+								relevant = html;
+						}
+
+						// fallback: if nothing matched, use full HTML
+						if (!relevant) {
+							relevant = html;
+						}
+
+						// truncate only if still too large
+						if (relevant.length > maxLength) {
+							return relevant.slice(0, maxLength);
+						}
+
+						return relevant;
+					}
       // ------------------------
       // Slice HTML into chunks for multiple attempts
       // ------------------------
@@ -191,7 +258,7 @@ Requirements:
 6. Do not use XPath or overly generic selectors (e.g., div, span).
 
 HTML snippet:
-${getRelevantHTML(chunk, 35000)}
+${getRelevantHTMLByType(chunk,elementType, 35000)}
 
 Return your answer strictly in JSON format with the following keys:
 - selector: The best CSS selector as a string.
