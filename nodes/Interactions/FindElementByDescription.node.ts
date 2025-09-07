@@ -200,6 +200,8 @@ Respond strictly in JSON:
           // Validate selector
           if (selector && page) {
             try {
+							await page.waitForLoadState('domcontentloaded');
+							await page.waitForLoadState('networkidle');
               const elementHandle = await page.$(selector);
               validated = !!elementHandle;
             } catch {
