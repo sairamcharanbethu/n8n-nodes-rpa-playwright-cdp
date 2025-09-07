@@ -34,6 +34,18 @@ export class FindElementByDescription implements INodeType {
         required: true,
       },
       {
+        displayName: 'AI Provider',
+        name: 'aiProvider',
+        type: 'options',
+        options: [
+          { name: 'OpenAI', value: 'openai' },
+          { name: 'OpenRouter', value: 'openrouter' },
+          { name: 'Gemini', value: 'gemini' },
+        ],
+        default: 'openai',
+        required: true,
+      },
+      {
         displayName: 'OpenAI / OpenRouter Model',
         name: 'openAiModel',
         type: 'string',
@@ -41,7 +53,7 @@ export class FindElementByDescription implements INodeType {
         placeholder: 'e.g. gpt-4o, gpt-4o-mini',
         required: true,
         displayOptions: {
-          show: { 'credential.provider': ['openai', 'openrouter'] },
+          show: { aiProvider: ['openai', 'openrouter'] },
         },
       },
       {
@@ -52,7 +64,7 @@ export class FindElementByDescription implements INodeType {
         placeholder: 'e.g. gemini-1.5-pro, gemini-2.0',
         required: true,
         displayOptions: {
-          show: { 'credential.provider': ['gemini'] },
+          show: { aiProvider: ['gemini'] },
         },
       },
       {
@@ -70,17 +82,17 @@ export class FindElementByDescription implements INodeType {
     const results: INodeExecutionData[] = [];
 
     const credentials = await this.getCredentials('aiProviderApi');
-    const provider = credentials.provider as string;
 
     for (let i = 0; i < items.length; i++) {
       const session = items[i].json as unknown as SessionObject;
       const description = this.getNodeParameter('description', i) as string;
+      const aiProvider = this.getNodeParameter('aiProvider', i) as string;
       const maxAttempts = this.getNodeParameter('maxAttempts', i, 3) as number;
 
       let model = '';
-      if (provider === 'openai' || provider === 'openrouter') {
+      if (aiProvider === 'openai' || aiProvider === 'openrouter') {
         model = this.getNodeParameter('openAiModel', i) as string;
-      } else if (provider === 'gemini') {
+      } else if (aiProvider === 'gemini') {
         model = this.getNodeParameter('geminiModel', i) as string;
       }
 
@@ -133,21 +145,18 @@ Respond strictly in JSON:
         `.trim();
 
         let apiUrl = '';
-        let apiKey = '';
         let headers: any = {};
         let body: any = {};
 
-        if (provider === 'openai') {
+        if (aiProvider === 'openai') {
           apiUrl = 'https://api.openai.com/v1/chat/completions';
-          apiKey = credentials.apiKey as string;
-          headers = { Authorization: `Bearer ${apiKey}` };
+          headers = { Authorization: `Bearer ${credentials.apiKey}` };
           body = { model, messages: [{ role: 'user', content: prompt }], temperature: 0.1, max_tokens: 400 };
-        } else if (provider === 'openrouter') {
+        } else if (aiProvider === 'openrouter') {
           apiUrl = 'https://openrouter.ai/api/v1/chat/completions';
-          apiKey = credentials.apiKey as string;
-          headers = { Authorization: `Bearer ${apiKey}` };
+          headers = { Authorization: `Bearer ${credentials.apiKey}` };
           body = { model, messages: [{ role: 'user', content: prompt }], temperature: 0.1, max_tokens: 400 };
-        } else if (provider === 'gemini') {
+        } else if (aiProvider === 'gemini') {
           apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${credentials.googleApiKey}`;
           headers = { 'Content-Type': 'application/json' };
           body = { contents: [{ parts: [{ text: prompt }] }] };
@@ -157,7 +166,7 @@ Respond strictly in JSON:
           const aiResponse = await axios.post(apiUrl, body, { headers });
           let parsed: any = {};
 
-          if (provider === 'gemini') {
+          if (aiProvider === 'gemini') {
             const geminiContent = aiResponse.data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
             parsed = typeof geminiContent === 'string' ? JSON.parse(geminiContent) : geminiContent;
           } else {
@@ -170,7 +179,7 @@ Respond strictly in JSON:
           reasoning = parsed.reasoning || '';
           alternatives = parsed.alternatives || [];
 
-          // --- Validate selector on the page ---
+          // --- Validate selector ---
           if (selector && page) {
             try {
               const elementHandle = await page.$(selector);
