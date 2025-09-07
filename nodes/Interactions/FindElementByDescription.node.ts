@@ -193,21 +193,47 @@ Respond strictly in JSON:
           }
 
           selector = parsed.selector || '';
+					console.log('Parsed selector:', parsed.selector);
+					console.log('Final selector:', selector);
           confidence = parsed.confidence || 0;
           reasoning = parsed.reasoning || '';
           alternatives = parsed.alternatives || [];
 
-				// Validate selector
-				if (selector && page) {
-					try {
-						await page.waitForLoadState('domcontentloaded', { timeout: 10000 });
-						await page.waitForLoadState('networkidle', { timeout: 15000 });
-						const elementHandle = await page.$(selector);
-						validated = !!elementHandle;
-					} catch {
-						validated = false;
+										// Validate selector
+					if (selector && page) {
+						try {
+							await page.waitForLoadState('domcontentloaded');
+							await page.waitForLoadState('networkidle');
+
+							console.log('Attempting to find selector:', selector);
+							console.log('Current page URL:', page.url());
+							console.log('Page title:', await page.title());
+
+							const elementHandle = await page.$(selector);
+							console.log('Raw element handle:', elementHandle);
+
+							if (elementHandle) {
+								const boundingBox = await elementHandle.boundingBox();
+								const innerHTML = await elementHandle.innerHTML();
+
+								console.log('✅ Element found!');
+								console.log('Bounding box:', boundingBox);
+								console.log('Inner HTML:', innerHTML.substring(0, 200) + '...'); // First 200 chars
+
+								validated = true;
+							} else {
+								console.log('❌ Element not found');
+								// Check if any similar elements exist
+								const allElements = await page.$$('*');
+								console.log('Total elements on page:', allElements.length);
+								validated = false;
+							}
+						} catch (error) {
+							console.log('❌ Exception during validation:', (error as Error).message);
+							validated = false;
+						}
 					}
-				}
+
 
         } catch (err: any) {
           reasoning = `AI did not return valid JSON or failed: ${err.message}`;
