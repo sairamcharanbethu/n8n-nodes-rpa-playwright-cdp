@@ -77,11 +77,31 @@ export class FindElementByDescription implements INodeType {
     ],
   };
 
+  // Helper to safely parse JSON returned by AI (strip code fences)
+  parseAiJson(text: string) {
+    const cleaned = text.replace(/```(json)?\n?/g, '').replace(/```$/, '').trim();
+    return JSON.parse(cleaned);
+  }
+
   async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
     const items = this.getInputData();
     const results: INodeExecutionData[] = [];
 
     const credentials = await this.getCredentials('aiProviderApi');
+
+    // Simple API key validation
+    if (!credentials) {
+      throw new Error('No credentials provided for AI provider.');
+    }
+    if (
+      (credentials.provider === 'openai' || credentials.provider === 'openrouter') &&
+      !credentials.apiKey
+    ) {
+      throw new Error('API Key missing for OpenAI / OpenRouter');
+    }
+    if (credentials.provider === 'gemini' && !credentials.googleApiKey) {
+      throw new Error('Google API Key missing for Gemini');
+    }
 
     for (let i = 0; i < items.length; i++) {
       const session = items[i].json as unknown as SessionObject;
@@ -168,10 +188,10 @@ Respond strictly in JSON:
 
           if (aiProvider === 'gemini') {
             const geminiContent = aiResponse.data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-            parsed = typeof geminiContent === 'string' ? JSON.parse(geminiContent) : geminiContent;
+            parsed = typeof geminiContent === 'string' ? this.parseAiJson(geminiContent) : geminiContent;
           } else {
             const content = aiResponse.data.choices?.[0]?.message?.content ?? aiResponse.data.choices?.[0]?.text ?? '';
-            parsed = typeof content === 'string' ? JSON.parse(content) : content;
+            parsed = typeof content === 'string' ? this.parseAiJson(content) : content;
           }
 
           selector = parsed.selector || '';
@@ -179,7 +199,7 @@ Respond strictly in JSON:
           reasoning = parsed.reasoning || '';
           alternatives = parsed.alternatives || [];
 
-          // --- Validate selector ---
+          // Validate selector
           if (selector && page) {
             try {
               const elementHandle = await page.$(selector);
@@ -189,8 +209,8 @@ Respond strictly in JSON:
             }
           }
 
-        } catch (err) {
-          reasoning = 'AI did not return valid JSON: ' + String(err);
+        } catch (err: any) {
+          reasoning = `AI did not return valid JSON or failed: ${err.message}`;
         }
       }
 
