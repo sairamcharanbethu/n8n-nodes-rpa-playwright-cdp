@@ -33,7 +33,8 @@
       "dist/nodes/browser/Navigate.node.js",
       "dist/nodes/browser/CloseBrowser.node.js",
       "dist/nodes/Interactions/FindElementByDescription.node.js",
-      "dist/nodes/Interactions/TypeInto.node.js"
+      "dist/nodes/Interactions/TypeInto.node.js",
+      "dist/nodes/Interactions/Click.node.js"
     ],
     "credentials": [
       "dist/credentials/AiProviderApi.credentials.js"
