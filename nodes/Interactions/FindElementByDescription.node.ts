@@ -197,17 +197,24 @@ Respond strictly in JSON:
           reasoning = parsed.reasoning || '';
           alternatives = parsed.alternatives || [];
 
-          // Validate selector
-          if (selector && page) {
-            try {
-							await page.waitForLoadState('domcontentloaded');
-							await page.waitForLoadState('networkidle');
-              const elementHandle = await page.$(selector);
-              validated = !!elementHandle;
-            } catch {
-              validated = false;
-            }
-          }
+        // Validate selector
+if (selector && page) {
+  try {
+    await page.waitForLoadState('domcontentloaded');
+    await page.waitForLoadState('networkidle');
+    // Wait for element to appear (optional)
+    await page.waitForSelector(selector, { timeout: 5000 });
+    validated = true;
+  } catch {
+    // Fallback to just checking if element exists
+    try {
+      const elementHandle = await page.$(selector);
+      validated = !!elementHandle;
+    } catch {
+      validated = false;
+    }
+  }
+}
 
         } catch (err: any) {
           reasoning = `AI did not return valid JSON or failed: ${err.message}`;

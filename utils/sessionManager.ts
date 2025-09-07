@@ -88,8 +88,8 @@ export async function launchGoogleSession(params: LaunchBrowserParams): Promise<
     const cdpUrl = capabilities['se:cdp'] as string;
 
     browser = await playwright.chromium.connectOverCDP(cdpUrl);
-    const context = browser.contexts()[0] || (await browser.newContext());
-    const page = await context.newPage();
+  	const context = browser.contexts()[0] || (await browser.newContext());
+   	const page = context.pages().length > 0 ? context.pages()[0] : await context.newPage();
 
     await page.goto(params.navigateUrl, {
       waitUntil: 'networkidle',
