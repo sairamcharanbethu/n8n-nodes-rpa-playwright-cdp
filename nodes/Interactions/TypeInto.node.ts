@@ -14,31 +14,28 @@ export class TypeInto implements INodeType {
     name: 'typeInto',
     group: ['transform'],
     version: 1,
-    description: 'Types text into a field using a CSS selector, with options for human-like delays.',
+    description: 'Types provided text into an element found by a manual CSS selector.',
     defaults: { name: 'Type Into' },
     inputs: [NodeConnectionType.Main],
     outputs: [NodeConnectionType.Main],
     properties: [
       {
         displayName: 'CSS Selector',
-        name: 'manualSelector',
+        name: 'selector',
         type: 'string',
         default: '',
-        displayOptions: {
-          show: {
-            selectorSource: ['manual']
-          }
-        }
+        required: true,
+        placeholder: 'e.g. input[name="email"], #search, .username-field',
       },
       {
         displayName: 'Text to Type',
         name: 'text',
         type: 'string',
         default: '',
-        required: true
+        required: true,
       },
       {
-        displayName: 'Typing Speed (ms per char)',
+        displayName: 'Typing Speed (ms per character)',
         name: 'delay',
         type: 'number',
         default: 70,
@@ -48,19 +45,22 @@ export class TypeInto implements INodeType {
         displayName: 'Clear Field First',
         name: 'clearBeforeTyping',
         type: 'boolean',
-        default: true
+        default: true,
+        description: 'Clear input element before typing'
       },
       {
         displayName: 'Focus Before Typing',
         name: 'focusFirst',
         type: 'boolean',
-        default: true
+        default: true,
+        description: 'Focus element before typing'
       },
       {
         displayName: 'Wait For Selector Timeout (ms)',
         name: 'waitTimeout',
         type: 'number',
-        default: 5000
+        default: 5000,
+        description: 'How long to wait for the selector'
       }
     ]
   };
@@ -71,36 +71,21 @@ export class TypeInto implements INodeType {
 
     for (let i = 0; i < items.length; i++) {
       const session = items[i].json as unknown as SessionObject;
-      const selectorSource = this.getNodeParameter('selectorSource', i) as string;
+      const selector = this.getNodeParameter('selector', i) as string;
       const text = this.getNodeParameter('text', i) as string;
       const delay = this.getNodeParameter('delay', i, 70) as number;
       const clearBeforeTyping = this.getNodeParameter('clearBeforeTyping', i, true) as boolean;
       const focusFirst = this.getNodeParameter('focusFirst', i, true) as boolean;
       const waitTimeout = this.getNodeParameter('waitTimeout', i, 5000) as number;
-      let selector = '';
 
-			if (selectorSource === 'manual') {
-        selector = this.getNodeParameter('manualSelector', i) as string;
-      }
-			// Future: add 'fromPreviousStep' option to get selector from previous node output
-
-      if (!selector) {
-        throw new Error('No selector found for element to type into.');
-      }
-      if (!session.cdpUrl) {
-        throw new Error('Session object missing cdpUrl.');
-      }
-
-      // --- Playwright action block ---
-      let browser: Browser | null = null;
       let typingResult: any = {};
+      let browser: Browser | null = null;
       try {
         browser = await chromium.connectOverCDP(session.cdpUrl);
         const context = browser.contexts()[0];
-        const page = context.pages()[0] || (await context.newPage());
+        const page = context.pages()[0] || await context.newPage();
 
         await page.waitForSelector(selector, { timeout: waitTimeout });
-
         const elHandle = await page.$(selector);
         if (!elHandle) {
           throw new Error(`Element with selector "${selector}" not found after waiting.`);
@@ -109,7 +94,7 @@ export class TypeInto implements INodeType {
         if (focusFirst) await elHandle.focus();
         if (clearBeforeTyping) await elHandle.fill('');
 
-        // Optional: random delay for human-like behavior
+        // Type with simulated human-like delay
         for (const char of text) {
           await elHandle.type(char, { delay: delay + Math.round(Math.random()*15) });
         }
