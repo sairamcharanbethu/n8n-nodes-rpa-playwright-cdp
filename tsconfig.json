@@ -18,6 +18,7 @@
   "include": [
     "nodes/**/*",
     "utils/**/*",
+		"credentials/**/*",
     "package.json"
   ]
 }
