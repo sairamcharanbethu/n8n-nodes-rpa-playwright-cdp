@@ -5,7 +5,7 @@ import {
   INodeExecutionData,
   NodeConnectionType,
 } from 'n8n-workflow';
-import { chromium, Browser } from 'playwright';
+import { chromium, Browser, Page } from 'playwright';
 import { SessionObject } from '../../utils/SessionObject';
 import axios from 'axios';
 
@@ -15,7 +15,7 @@ export class FindElementByDescription implements INodeType {
     name: 'findElementByDescription',
     group: ['transform'],
     version: 1,
-    description: 'Uses an LLM to find a reliable selector for a described element on the current page.',
+    description: 'Uses an LLM to find a reliable Playwright-compatible selector for a described element on the current page.',
     defaults: { name: 'Find Element' },
     inputs: [NodeConnectionType.Main],
     outputs: [NodeConnectionType.Main],
@@ -72,29 +72,31 @@ export class FindElementByDescription implements INodeType {
         name: 'maxAttempts',
         type: 'number',
         default: 3,
-        description: 'Number of AI retries before failing',
+        description: 'Number of AI retries per HTML chunk before failing',
       },
     ],
   };
 
+
+
   async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
     const items = this.getInputData();
     const results: INodeExecutionData[] = [];
-
-    const credentials = await this.getCredentials('aiProviderApi');
- // Helper to safely parse JSON returned by AI (strip code fences)
-  const parseAiJson = (text: string) => {
+  function parseAiJson(text: string) {
     const cleaned = text.replace(/```(json)?\n?/g, '').replace(/```$/, '').trim();
     return JSON.parse(cleaned);
-  };
-    // Simple API key validation
-    if (!credentials) {
-      throw new Error('No credentials provided for AI provider.');
-    }
-    if (
-      (credentials.provider === 'openai' || credentials.provider === 'openrouter') &&
-      !credentials.apiKey
-    ) {
+  }
+
+  function getRelevantHTML(html: string, maxLength = 35000): string {
+    if (html.length <= maxLength) return html;
+    const mid = Math.floor(html.length / 2);
+    const start = Math.max(0, mid - maxLength / 2);
+    return html.slice(start, start + maxLength);
+  }
+    const credentials = await this.getCredentials('aiProviderApi');
+
+    if (!credentials) throw new Error('No credentials provided for AI provider.');
+    if ((credentials.provider === 'openai' || credentials.provider === 'openrouter') && !credentials.apiKey) {
       throw new Error('API Key missing for OpenAI / OpenRouter');
     }
     if (credentials.provider === 'gemini' && !credentials.googleApiKey) {
@@ -114,14 +116,12 @@ export class FindElementByDescription implements INodeType {
         model = this.getNodeParameter('geminiModel', i) as string;
       }
 
-      if (!session.cdpUrl) {
-        throw new Error('Session object missing cdpUrl.');
-      }
+      if (!session.cdpUrl) throw new Error('Session object missing cdpUrl.');
 
       let browser: Browser | null = null;
+      let page: Page | null = null;
       let pageHTML = '';
-      let page: any;
-			let bodyHTML
+      let bodyHTML = '';
 
       try {
         browser = await chromium.connectOverCDP(session.cdpUrl);
@@ -129,12 +129,12 @@ export class FindElementByDescription implements INodeType {
         page = context.pages()[0] || (await context.newPage());
         await page.waitForLoadState('domcontentloaded', { timeout: 9000 });
         const rawHTML = await page.content();
+
         pageHTML = rawHTML
           .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
           .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
           .replace(/<!--[\s\S]*?-->/g, '');
-				bodyHTML = pageHTML.match(/<body[^>]*>([\s\S]*)<\/body>/i)?.[1] || pageHTML;
-        await browser.close();
+        bodyHTML = pageHTML.match(/<body[^>]*>([\s\S]*)<\/body>/i)?.[1] || pageHTML;
       } catch (e) {
         if (browser) await browser.close().catch(() => {});
         throw new Error('Could not connect to browser/obtain HTML: ' + (e as Error).message);
@@ -147,100 +147,99 @@ export class FindElementByDescription implements INodeType {
         alternatives: string[] = [],
         validated = false;
 
-      while (attempts < maxAttempts && !selector) {
-        attempts++;
-        const prompt = `
-You are an RPA agent. Given this HTML, find the best CSS selector for the element described as: "${description}"
+      // ------------------------
+      // Slice HTML into chunks for multiple attempts
+      // ------------------------
+      const chunkSize = 35000;
+      const htmlChunks: string[] = [];
+      for (let start = 0; start < bodyHTML.length; start += chunkSize) {
+        htmlChunks.push(bodyHTML.slice(start, start + chunkSize));
+      }
 
-HTML:
-${bodyHTML.slice(0, 35000)}
+      for (const chunk of htmlChunks) {
+        attempts = 0;
+        while (attempts < maxAttempts && !validated) {
+          attempts++;
+
+          const prompt = `
+You are an RPA agent. Given this HTML snippet, find the best Playwright-compatible CSS selector for the element described as: "${description}"
+
+Requirements:
+- Prefer ID selectors first, then unique attributes, then hierarchy.
+- Ensure the selector works with Playwright's page.$() or page.locator().
+- Provide multiple alternatives in case the first one does not work.
+
+HTML snippet:
+${getRelevantHTML(chunk, 35000)}
 
 Respond strictly in JSON:
 {
-  "selector": "<css_selector>",
+  "selector": "<playwright_selector>",
   "confidence": 0.0 to 1.0,
   "reasoning": "<Why this selector>",
-  "alternatives": ["<other selectors, if any>"]
+  "alternatives": ["<other selectors>"]
 }
-        `.trim();
+`.trim();
 
-        let apiUrl = '';
-        let headers: any = {};
-        let body: any = {};
+          let apiUrl = '';
+          let headers: any = {};
+          let body: any = {};
 
-        if (aiProvider === 'openai') {
-          apiUrl = 'https://api.openai.com/v1/chat/completions';
-          headers = { Authorization: `Bearer ${credentials.apiKey}` };
-          body = { model, messages: [{ role: 'user', content: prompt }], temperature: 0.1, max_tokens: 400 };
-        } else if (aiProvider === 'openrouter') {
-          apiUrl = 'https://openrouter.ai/api/v1/chat/completions';
-          headers = { Authorization: `Bearer ${credentials.apiKey}` };
-          body = { model, messages: [{ role: 'user', content: prompt }], temperature: 0.1, max_tokens: 400 };
-        } else if (aiProvider === 'gemini') {
-          apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${credentials.googleApiKey}`;
-          headers = { 'Content-Type': 'application/json' };
-          body = { contents: [{ parts: [{ text: prompt }] }] };
-        }
-
-        try {
-          const aiResponse = await axios.post(apiUrl, body, { headers });
-          let parsed: any = {};
-
-          if (aiProvider === 'gemini') {
-            const geminiContent = aiResponse.data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-            parsed = typeof geminiContent === 'string' ? parseAiJson(geminiContent) : geminiContent;
-          } else {
-            const content = aiResponse.data.choices?.[0]?.message?.content ?? aiResponse.data.choices?.[0]?.text ?? '';
-            parsed = typeof content === 'string' ? parseAiJson(content) : content;
+          if (aiProvider === 'openai') {
+            apiUrl = 'https://api.openai.com/v1/chat/completions';
+            headers = { Authorization: `Bearer ${credentials.apiKey}` };
+            body = { model, messages: [{ role: 'user', content: prompt }], temperature: 0.1, max_tokens: 400 };
+          } else if (aiProvider === 'openrouter') {
+            apiUrl = 'https://openrouter.ai/api/v1/chat/completions';
+            headers = { Authorization: `Bearer ${credentials.apiKey}` };
+            body = { model, messages: [{ role: 'user', content: prompt }], temperature: 0.1, max_tokens: 400 };
+          } else if (aiProvider === 'gemini') {
+            apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${credentials.googleApiKey}`;
+            headers = { 'Content-Type': 'application/json' };
+            body = { contents: [{ parts: [{ text: prompt }] }] };
           }
 
-          selector = parsed.selector || '';
-					console.log('Parsed selector:', parsed.selector);
-					console.log('Final selector:', selector);
-          confidence = parsed.confidence || 0;
-          reasoning = parsed.reasoning || '';
-          alternatives = parsed.alternatives || [];
+          try {
+            const aiResponse = await axios.post(apiUrl, body, { headers });
+            let parsed: any = {};
 
-										// Validate selector
-					if (selector && page) {
-						try {
-							await page.waitForLoadState('domcontentloaded');
-							await page.waitForLoadState('networkidle');
+            if (aiProvider === 'gemini') {
+              const geminiContent = aiResponse.data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+              parsed = typeof geminiContent === 'string' ? parseAiJson(geminiContent) : geminiContent;
+            } else {
+              const content = aiResponse.data.choices?.[0]?.message?.content ?? aiResponse.data.choices?.[0]?.text ?? '';
+              parsed = typeof content === 'string' ? parseAiJson(content) : content;
+            }
 
-							console.log('Attempting to find selector:', selector);
-							console.log('Current page URL:', page.url());
-							console.log('Page title:', await page.title());
+            selector = parsed.selector || '';
+            confidence = parsed.confidence || 0;
+            reasoning = parsed.reasoning || '';
+            alternatives = parsed.alternatives || [];
 
-							const elementHandle = await page.$(selector);
-							console.log('Raw element handle:', elementHandle);
-
-							if (elementHandle) {
-								const boundingBox = await elementHandle.boundingBox();
-								const innerHTML = await elementHandle.innerHTML();
-
-								console.log('✅ Element found!');
-								console.log('Bounding box:', boundingBox);
-								console.log('Inner HTML:', innerHTML.substring(0, 200) + '...'); // First 200 chars
-
-								validated = true;
-							} else {
-								console.log('❌ Element not found');
-								// Check if any similar elements exist
-								const allElements = await page.$$('*');
-								console.log('Total elements on page:', allElements.length);
-								validated = false;
-							}
-						} catch (error) {
-							console.log('❌ Exception during validation:', (error as Error).message);
-							validated = false;
-						}
-					}
-
-
-        } catch (err: any) {
-          reasoning = `AI did not return valid JSON or failed: ${err.message}`;
+            // ------------------------
+            // Validate selector + alternatives
+            // ------------------------
+            for (const sel of [selector, ...alternatives]) {
+              if (!sel || !page) continue;
+              try {
+                const elementHandle = await page.$(sel);
+                if (elementHandle) {
+                  selector = sel;
+                  validated = true;
+                  break;
+                }
+              } catch {
+                validated = false;
+              }
+            }
+          } catch (err: any) {
+            reasoning = `AI did not return valid JSON or failed: ${err.message}`;
+          }
         }
+        if (validated) break;
       }
+
+      if (browser) await browser.close(); // Close after all validation attempts
 
       results.push({
         json: {
