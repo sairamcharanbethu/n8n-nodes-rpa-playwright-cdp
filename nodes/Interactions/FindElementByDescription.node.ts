@@ -197,22 +197,15 @@ Respond strictly in JSON:
           reasoning = parsed.reasoning || '';
           alternatives = parsed.alternatives || [];
 
-        // Validate selector
+				// Validate selector
 				if (selector && page) {
 					try {
-						await page.waitForLoadState('domcontentloaded');
-						await page.waitForLoadState('networkidle');
-						// Wait for element to appear (optional)
-						await page.waitForSelector(selector, { timeout: 5000 });
-						validated = true;
+						await page.waitForLoadState('domcontentloaded', { timeout: 10000 });
+						await page.waitForLoadState('networkidle', { timeout: 15000 });
+						const elementHandle = await page.$(selector);
+						validated = !!elementHandle;
 					} catch {
-						// Fallback to just checking if element exists
-						try {
-							const elementHandle = await page.$(selector);
-							validated = !!elementHandle;
-						} catch {
-							validated = false;
-						}
+						validated = false;
 					}
 				}
 
