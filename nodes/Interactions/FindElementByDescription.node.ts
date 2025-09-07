@@ -8,11 +8,11 @@ import {
 import { chromium, Browser } from 'playwright';
 import { SessionObject } from '../../utils/SessionObject';
 
-// Map your human provider selection to the actual credential name/type in n8n
+// Map provider to actual n8n credential type
 const CREDENTIAL_MAP: Record<string, string> = {
-  openai: 'openAiApi',         // Common n8n built-in type for OpenAI
-  openrouter: 'openrouterApi', // Your custom or community credential for OpenRouter
-  gemini: 'googleGeminiApi',   // Your custom or community credential for Google Gemini
+  openai: 'openAiApi',     // Built-in
+  openrouter: 'openAiApi', // Reuse OpenAI credential
+  gemini: 'googleApi',     // Built-in Google API OAuth
 };
 
 export class FindElementByDescription implements INodeType {
@@ -26,11 +26,10 @@ export class FindElementByDescription implements INodeType {
     inputs: [NodeConnectionType.Main],
     outputs: [NodeConnectionType.Main],
 
-    // List all credential types your node supports here:
+    // Only list real credentials
     credentials: [
       { name: 'openAiApi', required: false },
-      { name: 'openrouterApi', required: false },
-      { name: 'googleGeminiApi', required: false },
+      { name: 'googleApi', required: false },
     ],
 
     properties: [
@@ -48,8 +47,8 @@ export class FindElementByDescription implements INodeType {
         type: 'options',
         options: [
           { name: 'OpenAI', value: 'openai' },
-          { name: 'OpenRouter', value: 'openrouter' },
-          { name: 'Gemini', value: 'gemini' },
+          { name: 'OpenRouter (uses OpenAI creds)', value: 'openrouter' },
+          { name: 'Google Gemini', value: 'gemini' },
         ],
         default: 'openai',
         required: true,
@@ -83,11 +82,12 @@ export class FindElementByDescription implements INodeType {
       const model = this.getNodeParameter('model', i) as string;
       const maxAttempts = this.getNodeParameter('maxAttempts', i, 3) as number;
 
-      // Lookup the credential type name (as entered in n8n's Credentials tab):
+      // Resolve credential type
       const credentialType = CREDENTIAL_MAP[aiProvider];
-      if (!this.getCredentials(credentialType)) {
+      const creds = await this.getCredentials(credentialType);
+      if (!creds) {
         throw new Error(
-          `No credential found! Click "Select credentials" and attach a ${aiProvider} credential.`
+          `No credential found! Attach ${credentialType} credentials for ${aiProvider}.`
         );
       }
 
@@ -140,62 +140,50 @@ Respond strictly in JSON:
 
         let aiResponse, parsed: any = {};
         try {
-          if (credentialType === 'openAiApi') {
-            aiResponse = await this.helpers.httpRequestWithAuthentication.call(
-              this,
-              credentialType,
-              {
-                method: 'POST',
-                url: 'https://api.openai.com/v1/chat/completions',
-                body: {
-                  model,
-                  messages: [{ role: 'user', content: prompt }],
-                  temperature: 0.1,
-                  max_tokens: 400,
-                },
-                json: true,
-              }
-            );
-            const content = aiResponse.choices?.[0]?.message?.content ?? aiResponse;
-            parsed = typeof content === 'string' ? JSON.parse(content) : content;
-          } else if (credentialType === 'openrouterApi') {
-            aiResponse = await this.helpers.httpRequestWithAuthentication.call(
-              this,
-              credentialType,
-              {
-                method: 'POST',
-                url: 'https://openrouter.ai/api/v1/chat/completions',
-                body: {
-                  model,
-                  messages: [{ role: 'user', content: prompt }],
-                  temperature: 0.1,
-                  max_tokens: 400,
-                },
-                json: true,
-              }
-            );
-            const content = aiResponse.choices?.[0]?.message?.content ?? aiResponse;
-            parsed = typeof content === 'string' ? JSON.parse(content) : content;
-          } else if (credentialType === 'googleGeminiApi') {
-            aiResponse = await this.helpers.httpRequestWithAuthentication.call(
-              this,
-              credentialType,
-              {
-                method: 'POST',
-                url: 'https://generativelanguage.googleapis.com/v1beta/models/' +
-                  model +
-                  ':generateContent',
-                body: {
-                  contents: [{ parts: [{ text: prompt }] }],
-                },
-                json: true,
-              }
-            );
-            // Gemini's response style
+          let url = '';
+          let body: any = {};
+
+          if (aiProvider === 'openai') {
+            url = 'https://api.openai.com/v1/chat/completions';
+            body = {
+              model,
+              messages: [{ role: 'user', content: prompt }],
+              temperature: 0.1,
+              max_tokens: 400,
+            };
+          } else if (aiProvider === 'openrouter') {
+            url = 'https://openrouter.ai/api/v1/chat/completions';
+            body = {
+              model,
+              messages: [{ role: 'user', content: prompt }],
+              temperature: 0.1,
+              max_tokens: 400,
+            };
+          } else if (aiProvider === 'gemini') {
+            url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+            body = { contents: [{ parts: [{ text: prompt }] }] };
+          }
+
+          aiResponse = await this.helpers.httpRequestWithAuthentication.call(
+            this,
+            credentialType,
+            {
+              method: 'POST',
+              url,
+              body,
+              json: true,
+            }
+          );
+
+          if (aiProvider === 'gemini') {
             const geminiContent =
               aiResponse?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
             parsed = typeof geminiContent === 'string' ? JSON.parse(geminiContent) : geminiContent;
+          } else {
+            const content = aiResponse.choices?.[0]?.message?.content ?? aiResponse;
+            parsed = typeof content === 'string' ? JSON.parse(content) : content;
           }
+
           selector = parsed.selector || '';
           confidence = parsed.confidence || 0;
           reasoning = parsed.reasoning || '';
