@@ -31,7 +31,7 @@ export class TypeInto implements INodeType {
         displayName: 'Text to Type',
         name: 'text',
         type: 'string',
-        default: '',
+        default: 'Write your text here',
         required: true,
       },
       {
