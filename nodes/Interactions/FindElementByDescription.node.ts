@@ -77,18 +77,16 @@ export class FindElementByDescription implements INodeType {
     ],
   };
 
-  // Helper to safely parse JSON returned by AI (strip code fences)
-  parseAiJson(text: string) {
-    const cleaned = text.replace(/```(json)?\n?/g, '').replace(/```$/, '').trim();
-    return JSON.parse(cleaned);
-  }
-
   async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
     const items = this.getInputData();
     const results: INodeExecutionData[] = [];
 
     const credentials = await this.getCredentials('aiProviderApi');
-
+ // Helper to safely parse JSON returned by AI (strip code fences)
+  const parseAiJson = (text: string) => {
+    const cleaned = text.replace(/```(json)?\n?/g, '').replace(/```$/, '').trim();
+    return JSON.parse(cleaned);
+  };
     // Simple API key validation
     if (!credentials) {
       throw new Error('No credentials provided for AI provider.');
