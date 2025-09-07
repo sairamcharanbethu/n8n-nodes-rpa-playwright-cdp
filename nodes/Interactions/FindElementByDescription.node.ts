@@ -169,68 +169,65 @@ export class FindElementByDescription implements INodeType {
         reasoning = '',
         alternatives: string[] = [],
         validated = false;
-			function getRelevantHTMLByType(html: string, elementType: string, maxLength = 35000): string {
-						let relevant = '';
+function getRelevantHTMLByType(html: string, elementType: string, maxLength = 35000): string {
+  let relevant = '';
 
-						switch (elementType.toLowerCase()) {
-							case 'input':
-								relevant = html.match(/<input[^>]*>/gi)?.join('\n') || '';
-								break;
-							case 'button':
-								relevant = html.match(/<button[^>]*>[\s\S]*?<\/button>/gi)?.join('\n') || '';
-								break;
-							case 'select':
-								relevant = html.match(/<select[^>]*>[\s\S]*?<\/select>/gi)?.join('\n') || '';
-								break;
-							case 'checkbox':
-								relevant = html.match(/<input[^>]*type=["']?checkbox["']?[^>]*>/gi)?.join('\n') || '';
-								break;
-							case 'radio':
-								relevant = html.match(/<input[^>]*type=["']?radio["']?[^>]*>/gi)?.join('\n') || '';
-								break;
-							case 'textarea':
-								relevant = html.match(/<textarea[^>]*>[\s\S]*?<\/textarea>/gi)?.join('\n') || '';
-								break;
-							case 'div':
-								relevant = html.match(/<div[^>]*>[\s\S]*?<\/div>/gi)?.join('\n') || '';
-								break;
-							case 'a':
-								relevant = html.match(/<a[^>]*>[\s\S]*?<\/a>/gi)?.join('\n') || '';
-								break;
-							case 'img':
-								relevant = html.match(/<img[^>]*>/gi)?.join('\n') || '';
-								break;
-							case 'span':
-								relevant = html.match(/<span[^>]*>[\s\S]*?<\/span>/gi)?.join('\n') || '';
-								break;
-							case 'p':
-								relevant = html.match(/<p[^>]*>[\s\S]*?<\/p>/gi)?.join('\n') || '';
-								break;
-							case 'h1,h2,h3,h4,h5,h6':
-								relevant = html.match(/<h[1-6][^>]*>[\s\S]*?<\/h[1-6]>/gi)?.join('\n') || '';
-								break;
-							case 'table':
-								relevant = html.match(/<table[^>]*>[\s\S]*?<\/table>/gi)?.join('\n') || '';
-								break;
-							case '*': // "Other"
-								relevant = html; // full HTML, no filtering
-								break;
-							default:
-								relevant = html;
-						}
+  switch (elementType.toLowerCase()) {
+    case 'input':
+      relevant = html.match(/<input[^>]*>/gi)?.join('\n') || '';
+      break;
+    case 'button':
+      relevant = html.match(/<button[^>]*>[\s\S]*?<\/button>/gi)?.join('\n') || '';
+      break;
+    case 'select':
+      relevant = html.match(/<select[^>]*>[\s\S]*?<\/select>/gi)?.join('\n') || '';
+      break;
+    case 'checkbox':
+      relevant = html.match(/<input[^>]*type=["']?checkbox["']?[^>]*>/gi)?.join('\n') || '';
+      break;
+    case 'radio':
+      relevant = html.match(/<input[^>]*type=["']?radio["']?[^>]*>/gi)?.join('\n') || '';
+      break;
+    case 'textarea':
+      relevant = html.match(/<textarea[^>]*>[\s\S]*?<\/textarea>/gi)?.join('\n') || '';
+      break;
+    case 'div':
+      relevant = html.match(/<div[^>]*>[\s\S]*?<\/div>/gi)?.join('\n') || '';
+      break;
+    case 'a':
+      relevant = html.match(/<a[^>]*>[\s\S]*?<\/a>/gi)?.join('\n') || '';
+      break;
+    case 'img':
+      relevant = html.match(/<img[^>]*>/gi)?.join('\n') || '';
+      break;
+    case 'span':
+      relevant = html.match(/<span[^>]*>[\s\S]*?<\/span>/gi)?.join('\n') || '';
+      break;
+    case 'p':
+      relevant = html.match(/<p[^>]*>[\s\S]*?<\/p>/gi)?.join('\n') || '';
+      break;
+    case 'h1,h2,h3,h4,h5,h6':
+      relevant = html.match(/<h[1-6][^>]*>[\s\S]*?<\/h[1-6]>/gi)?.join('\n') || '';
+      break;
+    case 'table':
+      relevant = html.match(/<table[^>]*>[\s\S]*?<\/table>/gi)?.join('\n') || '';
+      break;
+    case '*': // "Other"
+      relevant = html;
+      break;
+    default:
+      relevant = html;
+  }
 
-						// fallback: if nothing matched, use full HTML
-						if (!relevant) {
-							relevant = html;
-						}
+  if (!relevant) relevant = html;
 
-						// truncate only if still too large
-						if (relevant.length > maxLength) {
-							return relevant.slice(0, maxLength);
-						}
+  if (relevant.length > maxLength) {
+    return relevant.slice(0, maxLength);
+  }
 
-						return relevant;
-					}
+  return relevant;
+}
+			bodyHTML = getRelevantHTMLByType(bodyHTML, this.getNodeParameter('elementType', i) as string, 35000);
       // ------------------------
       // Slice HTML into chunks for multiple attempts
       // ------------------------
@@ -258,7 +255,7 @@ Requirements:
 6. Do not use XPath or overly generic selectors (e.g., div, span).
 
 HTML snippet:
-${getRelevantHTMLByType(chunk,elementType, 35000)}
+${getRelevantHTML(chunk, 35000)}
 
 Return your answer strictly in JSON format with the following keys:
 - selector: The best CSS selector as a string.
@@ -313,19 +310,59 @@ Here is the relevant JSON format example:
             // ------------------------
             // Validate selector + alternatives
             // ------------------------
-            for (const sel of [selector, ...alternatives]) {
-              if (!sel || !page) continue;
-              try {
-                const elementHandle = await page.$(sel);
-                if (elementHandle) {
-                  selector = sel;
-                  validated = true;
-                  break;
-                }
-              } catch {
-                validated = false;
-              }
-            }
+            // for (const sel of [selector, ...alternatives]) {
+            //   if (!sel || !page) continue;
+            //   try {
+            //     const elementHandle = await page.$(sel);
+            //     if (elementHandle) {
+            //       selector = sel;
+            //       validated = true;
+            //       break;
+            //     }
+            //   } catch {
+            //     validated = false;
+            //   }
+            // }
+						for (const sel of [selector, ...alternatives]) {
+							if (!sel || !page) continue;
+							try {
+								const elementHandle = await page.$(sel);
+								if (elementHandle) {
+									// Get tagName to validate against requested type
+									const tagName = (await elementHandle.evaluate(el => el.tagName.toLowerCase())) || '';
+									const typeAttr = (await elementHandle.evaluate(el => el.getAttribute('type'))) || '';
+
+									const elementType = (this.getNodeParameter('elementType', i) as string).toLowerCase();
+
+									let typeMatches = false;
+									switch (elementType) {
+										case 'input': typeMatches = tagName === 'input'; break;
+										case 'button': typeMatches = tagName === 'button'; break;
+										case 'select': typeMatches = tagName === 'select'; break;
+										case 'checkbox': typeMatches = tagName === 'input' && typeAttr === 'checkbox'; break;
+										case 'radio': typeMatches = tagName === 'input' && typeAttr === 'radio'; break;
+										case 'textarea': typeMatches = tagName === 'textarea'; break;
+										case 'div': typeMatches = tagName === 'div'; break;
+										case 'a': typeMatches = tagName === 'a'; break;
+										case 'img': typeMatches = tagName === 'img'; break;
+										case 'span': typeMatches = tagName === 'span'; break;
+										case 'p': typeMatches = tagName === 'p'; break;
+										case 'h1,h2,h3,h4,h5,h6': typeMatches = /^h[1-6]$/.test(tagName); break;
+										case 'table': typeMatches = tagName === 'table'; break;
+										case '*': typeMatches = true; break;
+									}
+
+									if (typeMatches) {
+										selector = sel;
+										validated = true;
+										break;
+									}
+								}
+							} catch {
+								validated = false;
+							}
+						}
+
           } catch (err: any) {
             reasoning = `AI did not return valid JSON or failed: ${err.message}`;
           }
