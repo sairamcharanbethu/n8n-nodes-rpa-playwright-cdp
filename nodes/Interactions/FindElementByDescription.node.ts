@@ -33,6 +33,23 @@ export class FindElementByDescription implements INodeType {
         placeholder: 'E.g. "blue submit button in signup form"',
         required: true,
       },
+			{
+				displayName: 'Element Type',
+				name: 'elementType',
+				type: 'options',
+				options: [
+					{ name: 'Input', value: 'input' },
+					{ name: 'Button', value: 'button' },
+					{ name: 'Select / Dropdown', value: 'select' },
+					{ name: 'Checkbox', value: 'checkbox' },
+					{ name: 'Radio', value: 'radio' },
+					{ name: 'Textarea', value: 'textarea' },
+					{ name: 'Div / Container', value: 'div' },
+					{ name: 'Link / Anchor', value: 'a' },
+				],
+				default: 'input',
+				description: 'Select the type of element to find for semantic validation',
+			},
       {
         displayName: 'AI Provider',
         name: 'aiProvider',
@@ -160,19 +177,29 @@ export class FindElementByDescription implements INodeType {
         attempts = 0;
         while (attempts < maxAttempts && !validated) {
           attempts++;
-
+					const elementType = this.getNodeParameter('elementType', i) as string;
           const prompt = `
-You are an RPA agent. Given this HTML snippet, find the best Playwright-compatible CSS selector for the element described as: "${description}"
+You are an RPA agent. Given this HTML, find the best CSS selector for the element described as: "${description}"
+and ensure it is of type "${elementType}" (e.g., input, button, select, etc.).
 
 Requirements:
-- Prefer ID selectors first, then unique attributes, then hierarchy.
-- Ensure the selector works with Playwright's page.$() or page.locator().
-- Provide multiple alternatives in case the first one does not work.
+1. Prefer selectors using the element's unique ID attribute first, if available.
+2. If no ID is available, use other unique attributes (e.g., name, class, data-*).
+3. If neither exists, use the element's position in the hierarchy (parent/child).
+4. Ensure the selector works with Playwright's page.$() or page.locator().
+5. Provide alternatives following the same priority.
+6. Do not use XPath or overly generic selectors (e.g., div, span).
 
 HTML snippet:
 ${getRelevantHTML(chunk, 35000)}
 
-Respond strictly in JSON:
+Return your answer strictly in JSON format with the following keys:
+- selector: The best CSS selector as a string.
+- confidence: A number between 0 and 1 indicating confidence in the selector's reliability.
+- reasoning: A brief explanation of why this selector was chosen.
+- alternatives: An array of alternative selectors, if any.
+
+Here is the relevant JSON format example:
 {
   "selector": "<playwright_selector>",
   "confidence": 0.0 to 1.0,
