@@ -7,13 +7,7 @@ import {
 } from 'n8n-workflow';
 import { chromium, Browser } from 'playwright';
 import { SessionObject } from '../../utils/SessionObject';
-
-// Map provider to actual n8n credential type
-const CREDENTIAL_MAP: Record<string, string> = {
-  openai: 'openAiApi',     // Built-in
-  openrouter: 'openAiApi', // Reuse OpenAI credential
-  gemini: 'googleApi',     // Built-in Google API OAuth
-};
+import axios from 'axios';
 
 export class FindElementByDescription implements INodeType {
   description: INodeTypeDescription = {
@@ -26,10 +20,8 @@ export class FindElementByDescription implements INodeType {
     inputs: [NodeConnectionType.Main],
     outputs: [NodeConnectionType.Main],
 
-    // Only list real credentials
     credentials: [
-      { name: 'openAiApi', required: false },
-      { name: 'googleApi', required: false },
+      { name: 'aiProviderApi', required: true },
     ],
 
     properties: [
@@ -42,24 +34,26 @@ export class FindElementByDescription implements INodeType {
         required: true,
       },
       {
-        displayName: 'AI Provider',
-        name: 'aiProvider',
-        type: 'options',
-        options: [
-          { name: 'OpenAI', value: 'openai' },
-          { name: 'OpenRouter (uses OpenAI creds)', value: 'openrouter' },
-          { name: 'Google Gemini', value: 'gemini' },
-        ],
-        default: 'openai',
-        required: true,
-      },
-      {
-        displayName: 'Model Name',
-        name: 'model',
+        displayName: 'OpenAI / OpenRouter Model',
+        name: 'openAiModel',
         type: 'string',
         default: 'gpt-4o',
-        placeholder: 'e.g. gpt-4o, mistralai/mistral-7b-instruct, gemini-1.5-pro',
+        placeholder: 'e.g. gpt-4o, gpt-4o-mini',
         required: true,
+        displayOptions: {
+          show: { 'credential.provider': ['openai', 'openrouter'] },
+        },
+      },
+      {
+        displayName: 'Gemini Model',
+        name: 'geminiModel',
+        type: 'string',
+        default: 'gemini-1.5-pro',
+        placeholder: 'e.g. gemini-1.5-pro, gemini-2.0',
+        required: true,
+        displayOptions: {
+          show: { 'credential.provider': ['gemini'] },
+        },
       },
       {
         displayName: 'Max Attempts',
@@ -75,33 +69,33 @@ export class FindElementByDescription implements INodeType {
     const items = this.getInputData();
     const results: INodeExecutionData[] = [];
 
+    const credentials = await this.getCredentials('aiProviderApi');
+    const provider = credentials.provider as string;
+
     for (let i = 0; i < items.length; i++) {
       const session = items[i].json as unknown as SessionObject;
       const description = this.getNodeParameter('description', i) as string;
-      const aiProvider = this.getNodeParameter('aiProvider', i) as string;
-      const model = this.getNodeParameter('model', i) as string;
       const maxAttempts = this.getNodeParameter('maxAttempts', i, 3) as number;
 
-      // Resolve credential type
-      const credentialType = CREDENTIAL_MAP[aiProvider];
-      const creds = await this.getCredentials(credentialType);
-      if (!creds) {
-        throw new Error(
-          `No credential found! Attach ${credentialType} credentials for ${aiProvider}.`
-        );
+      let model = '';
+      if (provider === 'openai' || provider === 'openrouter') {
+        model = this.getNodeParameter('openAiModel', i) as string;
+      } else if (provider === 'gemini') {
+        model = this.getNodeParameter('geminiModel', i) as string;
       }
 
       if (!session.cdpUrl) {
         throw new Error('Session object missing cdpUrl.');
       }
 
-      // --- Use Playwright to connect and extract current cleaned HTML ---
       let browser: Browser | null = null;
       let pageHTML = '';
+      let page: any;
+
       try {
         browser = await chromium.connectOverCDP(session.cdpUrl);
         const context = browser.contexts()[0];
-        const page = context.pages()[0] || (await context.newPage());
+        page = context.pages()[0] || (await context.newPage());
         await page.waitForLoadState('domcontentloaded', { timeout: 9000 });
         const rawHTML = await page.content();
         pageHTML = rawHTML
@@ -114,12 +108,12 @@ export class FindElementByDescription implements INodeType {
         throw new Error('Could not connect to browser/obtain HTML: ' + (e as Error).message);
       }
 
-      // --- AI request/response logic ---
       let attempts = 0,
         selector = '',
         confidence = 0,
         reasoning = '',
-        alternatives: string[] = [];
+        alternatives: string[] = [],
+        validated = false;
 
       while (attempts < maxAttempts && !selector) {
         attempts++;
@@ -138,49 +132,36 @@ Respond strictly in JSON:
 }
         `.trim();
 
-        let aiResponse, parsed: any = {};
+        let apiUrl = '';
+        let apiKey = '';
+        let headers: any = {};
+        let body: any = {};
+
+        if (provider === 'openai') {
+          apiUrl = 'https://api.openai.com/v1/chat/completions';
+          apiKey = credentials.apiKey as string;
+          headers = { Authorization: `Bearer ${apiKey}` };
+          body = { model, messages: [{ role: 'user', content: prompt }], temperature: 0.1, max_tokens: 400 };
+        } else if (provider === 'openrouter') {
+          apiUrl = 'https://openrouter.ai/api/v1/chat/completions';
+          apiKey = credentials.apiKey as string;
+          headers = { Authorization: `Bearer ${apiKey}` };
+          body = { model, messages: [{ role: 'user', content: prompt }], temperature: 0.1, max_tokens: 400 };
+        } else if (provider === 'gemini') {
+          apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${credentials.googleApiKey}`;
+          headers = { 'Content-Type': 'application/json' };
+          body = { contents: [{ parts: [{ text: prompt }] }] };
+        }
+
         try {
-          let url = '';
-          let body: any = {};
+          const aiResponse = await axios.post(apiUrl, body, { headers });
+          let parsed: any = {};
 
-          if (aiProvider === 'openai') {
-            url = 'https://api.openai.com/v1/chat/completions';
-            body = {
-              model,
-              messages: [{ role: 'user', content: prompt }],
-              temperature: 0.1,
-              max_tokens: 400,
-            };
-          } else if (aiProvider === 'openrouter') {
-            url = 'https://openrouter.ai/api/v1/chat/completions';
-            body = {
-              model,
-              messages: [{ role: 'user', content: prompt }],
-              temperature: 0.1,
-              max_tokens: 400,
-            };
-          } else if (aiProvider === 'gemini') {
-            url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
-            body = { contents: [{ parts: [{ text: prompt }] }] };
-          }
-
-          aiResponse = await this.helpers.httpRequestWithAuthentication.call(
-            this,
-            credentialType,
-            {
-              method: 'POST',
-              url,
-              body,
-              json: true,
-            }
-          );
-
-          if (aiProvider === 'gemini') {
-            const geminiContent =
-              aiResponse?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+          if (provider === 'gemini') {
+            const geminiContent = aiResponse.data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
             parsed = typeof geminiContent === 'string' ? JSON.parse(geminiContent) : geminiContent;
           } else {
-            const content = aiResponse.choices?.[0]?.message?.content ?? aiResponse;
+            const content = aiResponse.data.choices?.[0]?.message?.content ?? aiResponse.data.choices?.[0]?.text ?? '';
             parsed = typeof content === 'string' ? JSON.parse(content) : content;
           }
 
@@ -188,6 +169,17 @@ Respond strictly in JSON:
           confidence = parsed.confidence || 0;
           reasoning = parsed.reasoning || '';
           alternatives = parsed.alternatives || [];
+
+          // --- Validate selector on the page ---
+          if (selector && page) {
+            try {
+              const elementHandle = await page.$(selector);
+              validated = !!elementHandle;
+            } catch {
+              validated = false;
+            }
+          }
+
         } catch (err) {
           reasoning = 'AI did not return valid JSON: ' + String(err);
         }
@@ -203,7 +195,7 @@ Respond strictly in JSON:
             reasoning,
             attempts,
             alternatives,
-            validated: false,
+            validated,
           },
         },
       });
