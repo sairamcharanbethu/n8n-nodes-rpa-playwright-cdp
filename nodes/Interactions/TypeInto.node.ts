@@ -29,7 +29,7 @@ export class TypeInto implements INodeType {
         description: 'CSS selector to identify the element to type into',
       },
       {
-        displayName: 'Text to Type',
+        displayName: 'Enter Text',
         name: 'text',
         type: 'string',
         default: '',
