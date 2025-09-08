@@ -112,6 +112,8 @@ export class TypeInto implements INodeType {
           throw new Error('Invalid session object or missing CDP URL');
         }
 
+        console.log('Connecting to browser with CDP URL:', session.cdpUrl);
+
         // Connect to browser
         browser = await chromium.connectOverCDP(session.cdpUrl);
         const context = browser.contexts()[0];
@@ -126,12 +128,34 @@ export class TypeInto implements INodeType {
           page = await context.newPage();
         }
 
+        console.log('Current page URL:', await page.url());
+
         // Validate selector
         if (!selector || selector.trim() === '') {
           throw new Error('CSS selector cannot be empty');
         }
 
+        console.log(`Looking for element with selector: "${selector}"`);
+
+        // Check if element exists first
+        const elementExists = await page.$(selector);
+        if (!elementExists) {
+          // Try to get all similar elements for debugging
+          const allElements = await page.$eval('*', (elements: any[]) => {
+            return elements.slice(0, 10).map(el => ({
+              tagName: el.tagName,
+              id: el.id,
+              className: el.className,
+              name: el.name,
+              type: el.type
+            }));
+          });
+          console.log('First 10 elements on page:', allElements);
+          throw new Error(`Element with selector "${selector}" not found on page`);
+        }
+
         // Wait for element with specified state
+        console.log(`Waiting for element to be ${waitState}...`);
         await page.waitForSelector(selector, {
           timeout: waitTimeout,
           state: waitState
@@ -143,9 +167,13 @@ export class TypeInto implements INodeType {
           throw new Error(`Element with selector "${selector}" not found after waiting`);
         }
 
+        console.log('Element found, checking properties...');
+
         // Check if element is actually interactable
         const isVisible = await elHandle.isVisible();
         const isEnabled = await elHandle.isEnabled();
+
+        console.log(`Element visible: ${isVisible}, enabled: ${isEnabled}`);
 
         if (!isVisible) {
           throw new Error(`Element with selector "${selector}" is not visible`);
@@ -157,15 +185,25 @@ export class TypeInto implements INodeType {
 
         // Focus element if requested
         if (focusFirst) {
+          console.log('Focusing element...');
           await elHandle.focus();
           // Small delay to ensure focus is properly set
           await page.waitForTimeout(100);
         }
 
+        // Get value before typing
+        const valueBefore = await elHandle.inputValue().catch(() =>
+          elHandle.evaluate((el: any) => el.value || el.textContent || '')
+        );
+        console.log('Value before typing:', valueBefore);
+
         // Clear field if requested
         if (clearBeforeTyping) {
+          console.log('Clearing field...');
           await elHandle.fill('');
         }
+
+        console.log(`Typing text: "${text}" with delay: ${delay}ms`);
 
         // Type text with specified delay
         if (delay > 0) {
@@ -174,8 +212,15 @@ export class TypeInto implements INodeType {
           await elHandle.fill(text);
         }
 
+        // Get value after typing to verify
+        const valueAfter = await elHandle.inputValue().catch(() =>
+          elHandle.evaluate((el: any) => el.value || el.textContent || '')
+        );
+        console.log('Value after typing:', valueAfter);
+
         // Press Enter if requested
         if (pressEnter) {
+          console.log('Pressing Enter...');
           await elHandle.press('Enter');
         }
 
