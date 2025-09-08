@@ -31,15 +31,15 @@ export class TypeInto implements INodeType {
         displayName: 'Text to Type',
         name: 'text',
         type: 'string',
-        default: 'Write your text here',
+        default: '',
         required: true,
       },
       {
-        displayName: 'Typing Speed (ms per character)',
+        displayName: 'Typing Speed (ms per character) [0 for instant]',
         name: 'delay',
         type: 'number',
-        default: 70,
-        description: 'Delay between keystrokes (simulate human typing)'
+        default: 0,
+        description: 'Delay between keystrokes. Use 0 for instant fill.'
       },
       {
         displayName: 'Clear Field First',
@@ -73,7 +73,7 @@ export class TypeInto implements INodeType {
       const session = items[i].json as unknown as SessionObject;
       const selector = this.getNodeParameter('selector', i) as string;
       const text = this.getNodeParameter('text', i) as string;
-      const delay = this.getNodeParameter('delay', i, 70) as number;
+      const delay = this.getNodeParameter('delay', i, 0) as number;
       const clearBeforeTyping = this.getNodeParameter('clearBeforeTyping', i, true) as boolean;
       const focusFirst = this.getNodeParameter('focusFirst', i, true) as boolean;
       const waitTimeout = this.getNodeParameter('waitTimeout', i, 5000) as number;
@@ -87,16 +87,25 @@ export class TypeInto implements INodeType {
 
         await page.waitForSelector(selector, { timeout: waitTimeout });
         const elHandle = await page.$(selector);
+
         if (!elHandle) {
           throw new Error(`Element with selector "${selector}" not found after waiting.`);
         }
 
         if (focusFirst) await elHandle.focus();
-        if (clearBeforeTyping) await elHandle.fill('');
 
-        // Type with simulated human-like delay
-        for (const char of text) {
-          await elHandle.type(char, { delay: delay + Math.round(Math.random()*15) });
+        if (clearBeforeTyping) {
+          await elHandle.fill('');
+        }
+
+        if (delay && delay > 0) {
+          // Human-like typing
+          for (const char of text) {
+            await elHandle.type(char, { delay });
+          }
+        } else {
+          // Fast, safest fill for input/textarea
+          await elHandle.fill(text);
         }
 
         typingResult = {
