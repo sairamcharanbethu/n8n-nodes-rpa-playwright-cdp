@@ -35,18 +35,18 @@ export class TypeInto implements INodeType {
         required: true,
       },
       {
-        displayName: 'Typing Speed (ms per character) [0 for instant]',
+        displayName: 'Typing Speed (ms per character)',
         name: 'delay',
         type: 'number',
         default: 0,
-        description: 'Delay between keystrokes. Use 0 for instant fill.'
+        description: 'Delay between keystrokes (set 0 for fast input)'
       },
       {
         displayName: 'Clear Field First',
         name: 'clearBeforeTyping',
         type: 'boolean',
         default: true,
-        description: 'Clear input element before typing'
+        description: 'Clear input before typing'
       },
       {
         displayName: 'Focus Before Typing',
@@ -60,7 +60,7 @@ export class TypeInto implements INodeType {
         name: 'waitTimeout',
         type: 'number',
         default: 5000,
-        description: 'How long to wait for the selector'
+        description: 'Selector wait timeout'
       }
     ]
   };
@@ -87,36 +87,29 @@ export class TypeInto implements INodeType {
 
         await page.waitForSelector(selector, { timeout: waitTimeout });
         const elHandle = await page.$(selector);
-
         if (!elHandle) {
           throw new Error(`Element with selector "${selector}" not found after waiting.`);
         }
 
         if (focusFirst) await elHandle.focus();
-
-        if (clearBeforeTyping) {
-          await elHandle.fill('');
-        }
-
-        if (delay && delay > 0) {
-          // Human-like typing
+        if (clearBeforeTyping) await elHandle.fill('');
+        if (delay > 0) {
           for (const char of text) {
             await elHandle.type(char, { delay });
           }
         } else {
-          // Fast, safest fill for input/textarea
           await elHandle.fill(text);
         }
-
+        const value = await page.$eval(selector, el => (el as HTMLInputElement).value || el.textContent);
         typingResult = {
           selector,
           textTyped: text,
           delay,
           clearBeforeTyping,
           focusFirst,
-          result: "success"
+          result: "success",
+          elementValue: value
         };
-
         await browser.close();
       } catch (e) {
         typingResult = {
