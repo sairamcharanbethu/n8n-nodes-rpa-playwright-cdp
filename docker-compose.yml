@@ -1,0 +1,157 @@
+networks:
+  ssmedia_ssmedia_net:
+    external: true
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  selenium-hub:
+    image: selenium/hub:4.25.0
+    container_name: selenium-hub
+    restart: unless-stopped
+    environment:
+      - OTEL_SDK_DISABLED=true
+      - SE_SESSION_REQUEST_TIMEOUT=300
+      - SE_SESSION_RETRY_INTERVAL=15
+      - SE_HUB_SESSION_REQUEST_TIMEOUT=300
+      - SE_HUB_SESSION_RETRY_INTERVAL=15
+    ports:
+      - "4442-4444:4442-4444"
+    networks: [ssmedia_ssmedia_net]
+
+  node-chromium:
+    image: selenium/node-chromium:4.25.0
+    container_name: node-chromium
+    restart: unless-stopped
+    shm_size: "2g"
+    environment:
+      - OTEL_SDK_DISABLED=true
+      - SE_EVENT_BUS_HOST=selenium-hub
+      - SE_EVENT_BUS_PUBLISH_PORT=4442
+      - SE_EVENT_BUS_SUBSCRIBE_PORT=4443
+      # Return a routable CDP endpoint from the Grid
+      - SE_NODE_GRID_URL=http://selenium-hub:4444
+      # Single session to avoid corrupting the shared profile
+      - SE_NODE_MAX_SESSIONS=1
+      - SE_NODE_SESSION_TIMEOUT=300
+      - VNC_NO_PASSWORD=1
+    volumes:
+      # FIXED: Mount to parent directory so Chrome can create subdirectories
+      - chrome_profile:/home/seluser/chrome-profiles
+    depends_on: [selenium-hub]
+    networks: [ssmedia_ssmedia_net]
+
+  postgres:
+    image: ${POSTGRES_IMAGE}
+    container_name: n8n-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ${DOCKERDIR}/n8n/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - ssmedia_ssmedia_net
+    logging: *default-logging
+
+  redis:
+    image: ${REDIS_IMAGE}
+    container_name: n8n-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - ${DOCKERDIR}/n8n/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - ssmedia_ssmedia_net
+    logging: *default-logging
+
+  n8n-web:
+    image: ${N8N_IMAGE}
+    platform: linux/arm64
+    container_name: n8n-web
+    restart: unless-stopped
+    environment:
+      GENERIC_TIMEZONE: ${GENERIC_TIMEZONE}
+      N8N_BASIC_AUTH_EXCLUDED_URLS: "/webhook,/webhook-test"
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: true
+      N8N_HOST: ${N8N_HOST}
+      N8N_PORT: ${N8N_PORT}
+      N8N_PROTOCOL: ${N8N_PROTOCOL}
+      N8N_EDITOR_BASE_URL: ${N8N_EDITOR_BASE_URL}
+      WEBHOOK_URL: ${N8N_WEBHOOK_URL}
+      NODE_ENV: production
+      N8N_RUNNERS_MAX_OLD_SPACE_SIZE: 8192
+      N8N_BASIC_AUTH_ACTIVE: ${N8N_BASIC_AUTH_ACTIVE}
+      N8N_BASIC_AUTH_USER: ${N8N_BASIC_AUTH_USER}
+      N8N_BASIC_AUTH_PASSWORD: ${N8N_BASIC_AUTH_PASSWORD}
+      N8N_DIAGNOSTICS_ENABLED: ${N8N_DIAGNOSTICS_ENABLED}
+      N8N_EXECUTIONS_MODE: ${N8N_EXECUTIONS_MODE}
+      N8N_FEATURES_PROJECTS: true
+      N8N_FEATURES_VARIABLES: true
+      N8N_FEATURES_SECRETS: true
+      NODE_FUNCTION_ALLOW_EXTERNAL: playwright
+      NODE_FUNCTION_ALLOW_BUILTIN: http,https,child_process,fs,path,os,playwright
+      N8N_RUNNERS_ENABLED: false
+      OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS: true
+      N8N_PROXY_HOPS: 1
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB}
+      DB_POSTGRESDB_USER: ${POSTGRES_USER}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
+      QUEUE_BULL_REDIS_HOST: ${QUEUE_BULL_REDIS_HOST}
+      QUEUE_BULL_REDIS_PORT: ${QUEUE_BULL_REDIS_PORT}
+      N8N_COMMUNITY_PACKAGES_ALLOW_TOOL_USAGE: true
+      N8N_CUSTOM_EXTENSIONS: /home/node/n8n-nodes-rpa-playwright-cdp
+# Route all browser work to Selenium Grid & reuse the node's persistent profile
+      SELENIUM_REMOTE_URL: http://selenium-hub:4444
+      SELENIUM_REMOTE_CAPABILITIES: >-
+        {
+          "browserName": "chrome",
+          "goog:chromeOptions": {
+            "args": [
+              "--user-data-dir=/home/seluser/chrome-profiles/n8n-demo",
+              "--profile-directory=Default",
+              "--no-sandbox",
+              "--disable-dev-shm-usage"
+            ]
+          }
+        }
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    expose:
+      - "${N8N_PORT}"
+    volumes:
+      - ${DOCKERDIR}/n8n/n8n_data:/home/node/.n8n
+      - ${DOCKERDIR}/n8n/local-files:/files
+      - ${DOCKERDIR}/n8n/cache:/home/node/.cache   # for n8n internal cache, fixes EACCES
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:${N8N_PORT}/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+    networks:
+      - ssmedia_ssmedia_net
+    logging: *default-logging
+
+volumes:
+  chrome_profile:
