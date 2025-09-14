@@ -39,6 +39,7 @@ export class TypeInto implements INodeType {
         type: 'string',
         default: '',
         required: true,
+        description: 'CSS selector to find the target element',
       },
       {
         displayName: 'Text to Type',
@@ -46,12 +47,56 @@ export class TypeInto implements INodeType {
         type: 'string',
         default: '',
         required: true,
+        description: 'Text content to type into the element',
       },
       {
         displayName: 'Wait For Selector Timeout (ms)',
         name: 'waitTimeout',
         type: 'number',
         default: 5000,
+        description: 'Maximum time to wait for selector to appear',
+      },
+      {
+        displayName: 'Clear Field First',
+        name: 'clearFirst',
+        type: 'boolean',
+        default: true,
+        description: 'Clear the field before typing',
+      },
+      {
+        displayName: 'Typing Delay (ms)',
+        name: 'typingDelay',
+        type: 'number',
+        default: 0,
+        description: 'Delay between keystrokes (0 for instant)',
+      },
+      {
+        displayName: 'Click Before Typing',
+        name: 'clickFirst',
+        type: 'boolean',
+        default: false,
+        description: 'Click the element before typing to ensure focus',
+      },
+      {
+        displayName: 'Press Enter After',
+        name: 'pressEnter',
+        type: 'boolean',
+        default: false,
+        description: 'Press Enter key after typing',
+      },
+      {
+        displayName: 'Press Tab After',
+        name: 'pressTab',
+        type: 'boolean',
+        default: false,
+        description: 'Press Tab key after typing',
+      },
+      {
+        displayName: 'Wait After Typing (ms)',
+        name: 'waitAfter',
+        type: 'number',
+        default: 0,
+        description: 'Wait time after typing is complete',
       }
     ]
   };
@@ -65,81 +110,99 @@ export class TypeInto implements INodeType {
       const selector = this.getNodeParameter('selector', i) as string;
       const text = this.getNodeParameter('text', i) as string;
       const waitTimeout = this.getNodeParameter('waitTimeout', i, 5000) as number;
+      const clearFirst = this.getNodeParameter('clearFirst', i, true) as boolean;
+      const typingDelay = this.getNodeParameter('typingDelay', i, 0) as number;
+      const clickFirst = this.getNodeParameter('clickFirst', i, false) as boolean;
+      const pressEnter = this.getNodeParameter('pressEnter', i, false) as boolean;
+      const pressTab = this.getNodeParameter('pressTab', i, false) as boolean;
+      const waitAfter = this.getNodeParameter('waitAfter', i, 0) as number;
 
       let typingResult: any = {};
       let browser = null;
-			let page = null;
+      let page = null;
+
       try {
-        typingResult.step1_connecting = true;
+        // Connect to browser via CDP
         browser = await chromium.connectOverCDP(session.cdpUrl);
-        typingResult.step2_connected = true;
-				const context = browser.contexts()[0];
+        const context = browser.contexts()[0];
         page = context.pages()[0] || (await context.newPage());
+
+        // Wait for page to be ready
         await page.waitForLoadState('domcontentloaded', { timeout: 9000 });
-        typingResult.step3_page_ready = true;
 
-        // Debug info
+        // Basic debug info
         typingResult.currentUrl = await page.url();
-        typingResult.pageTitle = await page.title();
-        typingResult.step4_page_info_captured = true;
+        typingResult.selector = selector;
 
-        typingResult.step5_waiting_for_selector = true;
+        // Wait for element to be available
         await page.waitForSelector(selector, { timeout: waitTimeout });
-        typingResult.step6_selector_found = true;
 
+        // Get the element
         const el = await page.$(selector);
-        typingResult.step7_element_queried = true;
         if (!el) throw new Error('Selector not found after wait');
 
-        typingResult.step8_element_exists = true;
-
-        // Get element info for debug
+        // Get element information for debugging
         typingResult.elementTag = await el.evaluate(el => el.tagName);
-        typingResult.elementType = await el.evaluate(el => el.getAttribute('type') || 'none');
-        typingResult.elementId = await el.evaluate(el => el.id || 'none');
-        typingResult.elementClass = await el.evaluate(el => el.className || 'none');
-        typingResult.valueBefore = await el.evaluate(el => (el as any).value || el.textContent || 'empty');
-        typingResult.step9_element_info_captured = true;
+        typingResult.valueBefore = await el.evaluate(el => (el as any).value || el.textContent || '');
 
-        await el.fill(text);
-        typingResult.step10_fill_completed = true;
+        // Click element first if requested (helps with focus)
+        if (clickFirst) {
+          await el.click();
+        }
 
-        // Get value after typing for debug
-        typingResult.valueAfter = await el.evaluate(el => (el as any).value || el.textContent || 'empty');
-        typingResult.step11_value_after_captured = true;
+        // Clear field if requested
+        if (clearFirst) {
+          await el.fill('');
+        }
 
+        // Type the text with optional delay
+        if (typingDelay > 0) {
+          await el.focus();
+          await page.keyboard.type(text, { delay: typingDelay });
+        } else {
+          await el.fill(text);
+        }
+
+        // Press Enter if requested
+        if (pressEnter) {
+          await page.keyboard.press('Enter');
+        }
+
+        // Press Tab if requested
+        if (pressTab) {
+          await page.keyboard.press('Tab');
+        }
+
+        // Wait after typing if requested
+        if (waitAfter > 0) {
+          await page.waitForTimeout(waitAfter);
+        }
+
+        // Get final value for verification
+        typingResult.valueAfter = await el.evaluate(el => (el as any).value || el.textContent || '');
+
+        // Success result
         typingResult.result = 'success';
         typingResult.textTyped = text;
-        typingResult.cdpUrl = session.cdpUrl;
 
         await browser.close();
-        typingResult.step12_browser_closed = true;
 
       } catch (e) {
         const errorMsg = (e as Error).message;
-        const errorStack = (e as Error).stack;
 
+        // Error result with context
         typingResult.result = 'error';
         typingResult.error = errorMsg;
-        typingResult.errorStack = errorStack;
-        typingResult.cdpUrl = session.cdpUrl;
         typingResult.selector = selector;
         typingResult.textToType = text;
 
-        // Capture any debug info we got before error
-        if (typingResult.currentUrl) {
-          typingResult.errorContext = 'Error occurred after page connection';
-        } else {
-          typingResult.errorContext = 'Error occurred during initial connection';
-        }
-
         if (browser) {
           await browser.close().catch(() => {});
-          typingResult.browserClosedAfterError = true;
         }
       }
 
-      results.push({json: {...session, typeAction: typingResult}});
+      // Push result without merging into session (reusable across workflows)
+      results.push({json: typingResult});
     }
 
     return [results];

@@ -26,6 +26,7 @@ export class Click implements INodeType {
         default: '',
         required: true,
         placeholder: 'E.g. #submit, .my-btn, input[name="user"]',
+        description: 'CSS selector to find the target element',
       },
       {
         displayName: 'Click Type',
@@ -37,24 +38,75 @@ export class Click implements INodeType {
           { name: 'Right Click', value: 'right' },
         ],
         default: 'single',
+        description: 'Type of click to perform',
       },
       {
         displayName: 'Wait For Selector Timeout (ms)',
         name: 'waitTimeout',
         type: 'number',
         default: 5000,
+        description: 'Maximum time to wait for selector to appear',
       },
       {
         displayName: 'Scroll Into View First',
         name: 'scrollIntoView',
         type: 'boolean',
         default: true,
+        description: 'Scroll element into view before clicking',
       },
       {
         displayName: 'Force Click (ignore blocking elements)',
         name: 'forceClick',
         type: 'boolean',
         default: false,
+        description: 'Force click even if element is obscured',
+      },
+      {
+        displayName: 'Wait Before Click (ms)',
+        name: 'waitBefore',
+        type: 'number',
+        default: 0,
+        description: 'Wait time before clicking',
+      },
+      {
+        displayName: 'Wait After Click (ms)',
+        name: 'waitAfter',
+        type: 'number',
+        default: 0,
+        description: 'Wait time after clicking',
+      },
+      {
+        displayName: 'Wait For Navigation',
+        name: 'waitForNavigation',
+        type: 'boolean',
+        default: false,
+        description: 'Wait for page navigation after click',
+      },
+      {
+        displayName: 'Navigation Timeout (ms)',
+        name: 'navigationTimeout',
+        type: 'number',
+        default: 30000,
+        displayOptions: {
+          show: {
+            waitForNavigation: [true],
+          },
+        },
+        description: 'Timeout for navigation wait',
+      },
+      {
+        displayName: 'Click Position',
+        name: 'clickPosition',
+        type: 'options',
+        options: [
+          { name: 'Center', value: 'center' },
+          { name: 'Top Left', value: 'top-left' },
+          { name: 'Top Right', value: 'top-right' },
+          { name: 'Bottom Left', value: 'bottom-left' },
+          { name: 'Bottom Right', value: 'bottom-right' },
+        ],
+        default: 'center',
+        description: 'Position within element to click',
       }
     ]
   };
@@ -70,51 +122,123 @@ export class Click implements INodeType {
       const waitTimeout = this.getNodeParameter('waitTimeout', i, 5000) as number;
       const scrollIntoView = this.getNodeParameter('scrollIntoView', i, true) as boolean;
       const forceClick = this.getNodeParameter('forceClick', i, false) as boolean;
+      const waitBefore = this.getNodeParameter('waitBefore', i, 0) as number;
+      const waitAfter = this.getNodeParameter('waitAfter', i, 0) as number;
+      const waitForNavigation = this.getNodeParameter('waitForNavigation', i, false) as boolean;
+      const navigationTimeout = this.getNodeParameter('navigationTimeout', i, 30000) as number;
+      const clickPosition = this.getNodeParameter('clickPosition', i, 'center') as string;
 
       let clickResult: any = {};
       let browser: Browser | null = null;
+
       try {
+        // Connect to browser via CDP
         browser = await chromium.connectOverCDP(session.cdpUrl);
         const context = browser.contexts()[0];
         const page = context.pages()[0] || await context.newPage();
 
+        // Wait for page to be ready
+        await page.waitForLoadState('domcontentloaded', { timeout: 9000 });
+
+        // Basic debug info
+        clickResult.currentUrl = await page.url();
+        clickResult.selector = selector;
+
+        // Wait for element to be available
         await page.waitForSelector(selector, { timeout: waitTimeout });
         const elHandle = await page.$(selector);
         if (!elHandle) throw new Error(`Element with selector "${selector}" not found`);
 
-        if (scrollIntoView) await elHandle.scrollIntoViewIfNeeded();
+        // Get element information for debugging
+        clickResult.elementTag = await elHandle.evaluate(el => el.tagName);
+        clickResult.elementVisible = await elHandle.isVisible();
+        clickResult.elementEnabled = await elHandle.isEnabled();
 
-        if (clickType === 'double')
-          await elHandle.dblclick({ force: forceClick });
-        else if (clickType === 'right')
-          await elHandle.click({ button: 'right', force: forceClick });
-        else
-          await elHandle.click({ force: forceClick });
+        // Scroll into view if requested
+        if (scrollIntoView) {
+          await elHandle.scrollIntoViewIfNeeded();
+          clickResult.scrolledIntoView = true;
+        }
 
-        clickResult = {
-          selector,
-          clickType,
-          scrollIntoView,
-          forceClick,
-          result: 'clicked',
-        };
+        // Wait before click if requested
+        if (waitBefore > 0) {
+          await page.waitForTimeout(waitBefore);
+        }
+
+        // Determine click position
+        let position = undefined;
+        if (clickPosition !== 'center') {
+          const box = await elHandle.boundingBox();
+          if (box) {
+            switch (clickPosition) {
+              case 'top-left':
+                position = { x: box.x + 1, y: box.y + 1 };
+                break;
+              case 'top-right':
+                position = { x: box.x + box.width - 1, y: box.y + 1 };
+                break;
+              case 'bottom-left':
+                position = { x: box.x + 1, y: box.y + box.height - 1 };
+                break;
+              case 'bottom-right':
+                position = { x: box.x + box.width - 1, y: box.y + box.height - 1 };
+                break;
+            }
+          }
+        }
+
+        // Setup navigation promise if needed
+        let navigationPromise;
+        if (waitForNavigation) {
+          navigationPromise = page.waitForNavigation({ timeout: navigationTimeout });
+        }
+
+        // Perform the click based on type
+        const clickOptions = { force: forceClick, position };
+        if (clickType === 'double') {
+          await elHandle.dblclick(clickOptions);
+        } else if (clickType === 'right') {
+          await elHandle.click({ ...clickOptions, button: 'right' });
+        } else {
+          await elHandle.click(clickOptions);
+        }
+
+        clickResult.clickPerformed = true;
+
+        // Wait for navigation if requested
+        if (waitForNavigation && navigationPromise) {
+          await navigationPromise;
+          clickResult.navigationCompleted = true;
+          clickResult.newUrl = await page.url();
+        }
+
+        // Wait after click if requested
+        if (waitAfter > 0) {
+          await page.waitForTimeout(waitAfter);
+        }
+
+        // Success result
+        clickResult.result = 'success';
+        clickResult.clickType = clickType;
 
         await browser.close();
+
       } catch (e) {
-        clickResult = {
-          selector,
-          clickType,
-          error: (e as Error).message,
-        };
-        if (browser) await browser.close().catch(() => { });
+        const errorMsg = (e as Error).message;
+
+        // Error result with context
+        clickResult.result = 'error';
+        clickResult.error = errorMsg;
+        clickResult.selector = selector;
+        clickResult.clickType = clickType;
+
+        if (browser) {
+          await browser.close().catch(() => {});
+        }
       }
 
-      results.push({
-        json: {
-          ...session,
-          clickAction: clickResult,
-        }
-      });
+      // Push result without merging into session (reusable across workflows)
+      results.push({ json: clickResult });
     }
 
     return [results];
