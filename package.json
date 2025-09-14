@@ -19,15 +19,15 @@
     "prepare": "npm run build"
   },
   "dependencies": {
+    "@types/node": "^22.18.1",
+    "gulp": "^4.0.2",
     "n8n-workflow": "^1.82.0",
     "playwright": "^1.55.0",
-    "typescript": "^5.5.3",
-    "gulp": "^4.0.2",
-    "@types/node": "^22.18.1"
+    "typescript": "^5.5.3"
   },
   "devDependencies": {
     "eslint": "^8.56.0",
-    "prettier": "^3.0.0"
+    "prettier": "^3.6.2"
   },
   "engines": {
     "node": ">=18.0.0",
@@ -41,7 +41,12 @@
       "dist/nodes/browser/CloseBrowser.node.js",
       "dist/nodes/Interactions/FindElementByDescription.node.js",
       "dist/nodes/Interactions/TypeInto.node.js",
-      "dist/nodes/Interactions/Click.node.js"
+      "dist/nodes/Interactions/Click.node.js",
+      "dist/nodes/Interactions/GetText.node.js",
+      "dist/nodes/Interactions/TakeScreenshot.node.js",
+      "dist/nodes/Interactions/PageLoaded.node.js",
+      "dist/nodes/Interactions/GetTable.node.js",
+      "dist/nodes/Interactions/ElementExists.node.js"
     ],
     "credentials": [
       "dist/credentials/AiProviderApi.credentials.js"
