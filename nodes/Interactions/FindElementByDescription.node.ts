@@ -26,6 +26,14 @@ export class FindElementByDescription implements INodeType {
 
     properties: [
       {
+        displayName: 'CDP URL',
+        name: 'cdpUrl',
+        type: 'string',
+        default: '',
+        placeholder: 'E.g. ws://localhost:9222/devtools/browser/...',
+        required: true,
+      },
+      {
         displayName: 'Element Description',
         name: 'description',
         type: 'string',
@@ -128,6 +136,7 @@ export class FindElementByDescription implements INodeType {
 
     for (let i = 0; i < items.length; i++) {
       const session = items[i].json as unknown as SessionObject;
+			const cdpUrl = this.getNodeParameter('cdpUrl', i) as string;
       const description = this.getNodeParameter('description', i) as string;
       const aiProvider = this.getNodeParameter('aiProvider', i) as string;
       const maxAttempts = this.getNodeParameter('maxAttempts', i, 3) as number;
@@ -147,7 +156,7 @@ export class FindElementByDescription implements INodeType {
       let bodyHTML = '';
 
       try {
-        browser = await chromium.connectOverCDP(session.cdpUrl);
+        browser = await chromium.connectOverCDP(cdpUrl);
         const context = browser.contexts()[0];
         page = context.pages()[0] || (await context.newPage());
         await page.waitForLoadState('domcontentloaded', { timeout: 9000 });

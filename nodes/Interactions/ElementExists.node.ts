@@ -16,6 +16,14 @@ export class ElementExists implements INodeType {
     outputs: [NodeConnectionType.Main],
     properties: [
       {
+        displayName: 'CDP URL',
+        name: 'cdpUrl',
+        type: 'string',
+        default: '',
+        placeholder: 'E.g. ws://localhost:9222/devtools/browser/...',
+        required: true,
+      },
+      {
         displayName: 'CSS Selector',
         name: 'selector',
         type: 'string',
@@ -36,13 +44,14 @@ export class ElementExists implements INodeType {
     const results: INodeExecutionData[] = [];
     for (let i = 0; i < items.length; i++) {
       const session = items[i].json as unknown as SessionObject;
+			const cdpUrl = this.getNodeParameter('cdpUrl', i) as string;
       const selector = this.getNodeParameter('selector', i) as string;
       const waitTimeout = this.getNodeParameter('waitTimeout', i, 1000) as number;
 
       let exists = false;
       let browser: Browser | null = null, errorMsg = '';
       try {
-        browser = await chromium.connectOverCDP(session.cdpUrl);
+        browser = await chromium.connectOverCDP(cdpUrl);
         const page = browser.contexts()[0].pages()[0] || await browser.contexts()[0].newPage();
         exists = !!(await page.$(selector));
         if (!exists) {

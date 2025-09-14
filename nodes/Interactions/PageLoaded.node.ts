@@ -16,6 +16,14 @@ export class PageLoaded implements INodeType {
     outputs: [NodeConnectionType.Main],
     properties: [
       {
+        displayName: 'CDP URL',
+        name: 'cdpUrl',
+        type: 'string',
+        default: '',
+        placeholder: 'E.g. ws://localhost:9222/devtools/browser/...',
+        required: true,
+      },
+      {
         displayName: 'Wait Strategy',
         name: 'waitUntil',
         type: 'options',
@@ -41,12 +49,13 @@ export class PageLoaded implements INodeType {
     const results: INodeExecutionData[] = [];
     for (let i = 0; i < items.length; i++) {
       const session = items[i].json as unknown as SessionObject;
+			const cdpUrl = this.getNodeParameter('cdpUrl', i) as string;
       const waitUntil = this.getNodeParameter('waitUntil', i, 'load') as 'load'|'domcontentloaded'|'networkidle';
       const timeout = this.getNodeParameter('timeout', i, 10000) as number;
 
       let browser: Browser | null = null, loaded = false, errorMsg = '';
       try {
-        browser = await chromium.connectOverCDP(session.cdpUrl);
+        browser = await chromium.connectOverCDP(cdpUrl);
         const page = browser.contexts()[0].pages()[0] || await browser.contexts()[0].newPage();
         await page.waitForLoadState(waitUntil, { timeout });
         loaded = true;

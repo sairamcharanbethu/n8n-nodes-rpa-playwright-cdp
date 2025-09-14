@@ -14,7 +14,16 @@ export class CloseBrowser implements INodeType {
     },
     inputs: [NodeConnectionType.Main],
     outputs: [NodeConnectionType.Main],
-    properties: [],
+    properties: [
+			      {
+        displayName: 'CDP URL',
+        name: 'cdpUrl',
+        type: 'string',
+        default: '',
+        placeholder: 'E.g. ws://localhost:9222/devtools/browser/...',
+        required: true,
+      }
+		],
   };
 
   async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {

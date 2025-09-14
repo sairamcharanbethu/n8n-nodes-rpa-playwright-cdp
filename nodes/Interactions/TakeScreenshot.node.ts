@@ -16,6 +16,14 @@ export class TakeScreenshot implements INodeType {
     outputs: [NodeConnectionType.Main],
     properties: [
       {
+        displayName: 'CDP URL',
+        name: 'cdpUrl',
+        type: 'string',
+        default: '',
+        placeholder: 'E.g. ws://localhost:9222/devtools/browser/...',
+        required: true,
+      },
+      {
         displayName: 'CSS Selector (optional, leave blank for full page)',
         name: 'selector',
         type: 'string',
@@ -53,6 +61,7 @@ export class TakeScreenshot implements INodeType {
     const results: INodeExecutionData[] = [];
     for (let i = 0; i < items.length; i++) {
       const session = items[i].json as unknown as SessionObject;
+			const cdpUrl = this.getNodeParameter('cdpUrl', i) as string;
       const selector = this.getNodeParameter('selector', i) as string;
       const format = this.getNodeParameter('format', i, 'png') as 'png'|'jpeg';
       const base64 = this.getNodeParameter('base64', i, true) as boolean;
@@ -60,7 +69,7 @@ export class TakeScreenshot implements INodeType {
       let buffer: Buffer | undefined;
       let browser: Browser | null = null, screenshotResult: any = {};
       try {
-        browser = await chromium.connectOverCDP(session.cdpUrl);
+        browser = await chromium.connectOverCDP(cdpUrl);
         const page = browser.contexts()[0].pages()[0] || await browser.contexts()[0].newPage();
         if (selector) {
           const el = await page.$(selector);

@@ -27,6 +27,14 @@ export class GetTable implements INodeType {
     outputs: [NodeConnectionType.Main],
     properties: [
       {
+        displayName: 'CDP URL',
+        name: 'cdpUrl',
+        type: 'string',
+        default: '',
+        placeholder: 'E.g. ws://localhost:9222/devtools/browser/...',
+        required: true,
+      },
+      {
         displayName: 'Table Selector',
         name: 'selector',
         type: 'string',
@@ -58,6 +66,7 @@ export class GetTable implements INodeType {
 
     for (let i = 0; i < items.length; i++) {
       const session = items[i].json as unknown as SessionObject;
+			const cdpUrl = this.getNodeParameter('cdpUrl', i) as string;
       const selector = this.getNodeParameter('selector', i) as string;
       const hasHeader = this.getNodeParameter('hasHeader', i, true) as boolean;
       const waitTimeout = this.getNodeParameter('waitTimeout', i, 5000) as number;
@@ -67,7 +76,7 @@ export class GetTable implements INodeType {
 
       try {
         // Connect to browser via CDP
-        browser = await chromium.connectOverCDP(session.cdpUrl);
+        browser = await chromium.connectOverCDP(cdpUrl);
         const context = browser.contexts()[0];
         const page = context.pages()[0] || await context.newPage();
 

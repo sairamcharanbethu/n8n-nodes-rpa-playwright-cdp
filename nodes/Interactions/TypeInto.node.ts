@@ -34,6 +34,14 @@ export class TypeInto implements INodeType {
     outputs: [NodeConnectionType.Main],
     properties: [
       {
+        displayName: 'CDP URL',
+        name: 'cdpUrl',
+        type: 'string',
+        default: '',
+        placeholder: 'E.g. ws://localhost:9222/devtools/browser/...',
+        required: true,
+      },
+      {
         displayName: 'CSS Selector',
         name: 'selector',
         type: 'string',
@@ -107,6 +115,7 @@ export class TypeInto implements INodeType {
 
     for (let i = 0; i < items.length; i++) {
       const session = items[i].json as unknown as SessionObject;
+			const cdpUrl = this.getNodeParameter('cdpUrl', i) as string;
       const selector = this.getNodeParameter('selector', i) as string;
       const text = this.getNodeParameter('text', i) as string;
       const waitTimeout = this.getNodeParameter('waitTimeout', i, 5000) as number;
@@ -123,7 +132,7 @@ export class TypeInto implements INodeType {
 
       try {
         // Connect to browser via CDP
-        browser = await chromium.connectOverCDP(session.cdpUrl);
+        browser = await chromium.connectOverCDP(cdpUrl);
         const context = browser.contexts()[0];
         page = context.pages()[0] || (await context.newPage());
 
