@@ -148,7 +148,7 @@ export class FindElementByDescription implements INodeType {
         model = this.getNodeParameter('geminiModel', i) as string;
       }
 
-      if (cdpUrl) throw new Error('Session object missing cdpUrl.');
+      if (!cdpUrl) throw new Error('Session object missing cdpUrl.');
 
       let browser: Browser | null = null;
       let page: Page | null = null;
