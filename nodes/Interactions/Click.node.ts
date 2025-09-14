@@ -237,8 +237,8 @@ export class Click implements INodeType {
         }
       }
 
-      // Push result without merging into session (reusable across workflows)
-      results.push({ json: clickResult });
+      // Push result WITH session data to maintain browser connection for RPA workflows
+      results.push({ json: {...session, clickAction: clickResult} });
     }
 
     return [results];

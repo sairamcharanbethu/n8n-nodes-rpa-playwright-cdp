@@ -201,8 +201,8 @@ export class TypeInto implements INodeType {
         }
       }
 
-      // Push result without merging into session (reusable across workflows)
-      results.push({json: typingResult});
+      // Push result WITH session data to maintain browser connection for RPA workflows
+      results.push({json: {...session, typeAction: typingResult}});
     }
 
     return [results];
