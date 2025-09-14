@@ -4,7 +4,7 @@ import {
 import { chromium, Browser } from 'playwright';
 import { SessionObject } from '../../utils/SessionObject';
 
-export class Screenshot implements INodeType {
+export class TakeScreenshot implements INodeType {
   description: INodeTypeDescription = {
     displayName: 'Screenshot',
     name: 'screenshot',
