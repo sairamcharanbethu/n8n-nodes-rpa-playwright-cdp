@@ -9,22 +9,29 @@
     "email": "your@email.com"
   },
   "scripts": {
-    "build": "tsc && gulp build:icons",
+    "build": "npx tsc && npx gulp build:icons",
     "clean": "rm -rf dist/",
-    "dev": "tsc --watch",
-    "prettier": "prettier nodes utils --write",
-    "lint": "eslint nodes utils package.json",
-    "lintfix": "eslint nodes utils package.json --fix"
+    "dev": "npx tsc --watch",
+    "prettier": "npx prettier nodes utils --write",
+    "lint": "npx eslint nodes utils package.json",
+    "lintfix": "npx eslint nodes utils package.json --fix",
+    "postinstall": "npm run build",
+    "prepare": "npm run build"
   },
   "dependencies": {
     "n8n-workflow": "^1.82.0",
-    "playwright": "^1.55.0"
+    "playwright": "^1.55.0",
+    "typescript": "^5.5.3",
+    "gulp": "^4.0.2"
   },
   "devDependencies": {
     "@types/node": "^22.18.1",
     "eslint": "^8.56.0",
-    "gulp": "^4.0.2",
-    "typescript": "^5.5.3"
+    "prettier": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=8.0.0"
   },
   "n8n": {
     "n8nNodesApiVersion": 1,
@@ -38,6 +45,6 @@
     ],
     "credentials": [
       "dist/credentials/AiProviderApi.credentials.js"
-  ]
+    ]
   }
 }
