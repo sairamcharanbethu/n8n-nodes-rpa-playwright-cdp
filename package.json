@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@types/node": "^22.18.1",
+    "cheerio": "^1.1.2",
     "gulp": "^4.0.2",
     "n8n-workflow": "^1.82.0",
     "playwright": "^1.55.0",
@@ -27,6 +28,7 @@
     "uuid": "^13.0.0"
   },
   "devDependencies": {
+    "@types/cheerio": "^0.22.35",
     "eslint": "^8.56.0",
     "prettier": "^3.6.2"
   },
