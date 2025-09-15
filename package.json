@@ -48,7 +48,8 @@
       "dist/nodes/Interactions/PageLoaded.node.js",
       "dist/nodes/Interactions/GetTable.node.js",
       "dist/nodes/Interactions/ElementExists.node.js",
-      "dist/nodes/Interactions/DownloadFile.node.js"
+      "dist/nodes/Interactions/DownloadFile.node.js",
+      "dist/nodes/Interactions/TypeInto-Advanced.node.js"
     ],
     "credentials": [
       "dist/credentials/AiProviderApi.credentials.js"
