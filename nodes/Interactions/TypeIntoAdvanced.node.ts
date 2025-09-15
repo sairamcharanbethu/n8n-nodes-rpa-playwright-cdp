@@ -22,7 +22,7 @@ declare global {
   }
 }
 
-export class TypeInto implements INodeType {
+export class TypeIntoAdvanced implements INodeType {
   description: INodeTypeDescription = {
     displayName: 'Type Into Element',
     name: 'typeInto',
