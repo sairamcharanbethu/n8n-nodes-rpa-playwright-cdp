@@ -7,7 +7,6 @@ import {
 } from 'n8n-workflow';
 import { chromium, Browser, Page } from 'playwright';
 import { SessionObject } from '../../utils/SessionObject';
-import { neuralHeuristic } from '../../utils/NeuralHeuristic';
 import axios from 'axios';
 
 export class FindElementByDescription implements INodeType {
@@ -148,16 +147,6 @@ export class FindElementByDescription implements INodeType {
         },
       },
       {
-        displayName: 'Use Local Neural Heuristic (Fast ML)',
-        name: 'useNeuralHeuristic',
-        type: 'boolean',
-        default: true,
-        description: 'Use a local ML model for semantic matching before calling external AI. Faster and cheaper.',
-        displayOptions: {
-          hide: { discoveryMode: [true] },
-        },
-      },
-      {
         displayName: 'Use AI Fallback',
         name: 'useAI',
         type: 'boolean',
@@ -246,7 +235,6 @@ export class FindElementByDescription implements INodeType {
       const maxAttempts = this.getNodeParameter('maxAttempts', i, 3) as number;
       const discoveryMode = this.getNodeParameter('discoveryMode', i, false) as boolean;
       const heuristicSearch = this.getNodeParameter('heuristicSearch', i, true) as boolean;
-      const useNeuralHeuristic = this.getNodeParameter('useNeuralHeuristic', i, true) as boolean;
       const useAI = this.getNodeParameter('useAI', i, true) as boolean;
       const semanticValidation = this.getNodeParameter('semanticValidation', i, true) as boolean;
       const elementType = this.getNodeParameter('elementType', i, 'auto') as string;
@@ -347,7 +335,6 @@ export class FindElementByDescription implements INodeType {
           const squashedDesc = descLower.replace(/[\s\-_]/g, '');
 
           let exactMatches: any[] = [];
-
           for (const cand of candidates) {
             const atts = [cand.id, cand.name, cand.placeholder, cand.text, cand.ariaLabel, cand.href, cand.title, cand.alt].map(v => String(v || '').toLowerCase());
             const squashedAtts = atts.map(a => a.replace(/[\s\-_]/g, ''));
@@ -363,35 +350,6 @@ export class FindElementByDescription implements INodeType {
                selector = sel; validated = true; confidence = 0.99; reasoning = `Heuristic Fast Path: Unique exact match for "${description}".`;
              }
           }
-        }
-
-        // 2. Neural Heuristic (Local ML)
-        if (!validated && useNeuralHeuristic) {
-          try {
-            const descEmb = await neuralHeuristic.getEmbedding(description);
-            let bestCand = null;
-            let maxSim = 0;
-
-            for (const cand of candidates) {
-              const candText = `${cand.id} ${cand.name} ${cand.placeholder} ${cand.text} ${cand.ariaLabel} ${cand.title} ${cand.alt}`.toLowerCase();
-              const candEmb = await neuralHeuristic.getEmbedding(candText);
-              const sim = neuralHeuristic.cosineSimilarity(descEmb, candEmb);
-              if (sim > maxSim) {
-                maxSim = sim;
-                bestCand = cand;
-              }
-            }
-
-            if (bestCand && maxSim > 0.8) {
-              const sel = constructRobustSelector(bestCand);
-              const count = await page.evaluate((s) => (globalThis as any).document.querySelectorAll(s).length, sel);
-              if (count === 1) {
-                if (await runSemanticValidation(sel)) {
-                  selector = sel; validated = true; confidence = maxSim; reasoning = `Neural Heuristic (Local ML): Semantic match found (similarity: ${maxSim.toFixed(2)}).`;
-                }
-              }
-            }
-          } catch (e) { console.error('Neural heuristic failed:', e); }
         }
 
         // 3. AI Search Fallback
