@@ -201,11 +201,17 @@ export async function executeWithRecording<T>(
   params: { recordVideo?: boolean; videoResolution?: string },
   fn: (page: playwright.Page) => Promise<T>
 ): Promise<{ result: T; videoRecording?: string }> {
-  let browser: Browser | null = null;
+  let browser: playwright.Browser | null = null;
   let videoPath: string | null = null;
   try {
     browser = await playwright.chromium.connectOverCDP(session.cdpUrl);
-    let context;
+    const defaultContext = browser.contexts()[0] || (await browser.newContext());
+    const primaryPage = defaultContext.pages()[0] || (await defaultContext.newPage());
+    const currentUrl = primaryPage.url();
+
+    let context: playwright.BrowserContext;
+    let page: playwright.Page;
+
     if (params.recordVideo) {
       const [width, height] = (params.videoResolution || '1280,720').split(',').map(s => parseInt(s.trim()));
       const videoDir = '/tmp/n8n-videos';
@@ -218,17 +224,21 @@ export async function executeWithRecording<T>(
         }
       });
 
-      // Attempt to copy cookies from the default context (if any) to preserve auth
-      const defaultContext = browser.contexts()[0];
-      if (defaultContext) {
-        const cookies = await defaultContext.cookies();
-        await context.addCookies(cookies);
+      // Transfer cookies for auth
+      const cookies = await defaultContext.cookies();
+      await context.addCookies(cookies);
+
+      page = await context.newPage();
+
+      // Navigate to SAME url as primary page if not about:blank
+      if (currentUrl && currentUrl !== 'about:blank') {
+        await page.goto(currentUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
       }
     } else {
-      context = browser.contexts()[0] || (await browser.newContext());
+      context = defaultContext;
+      page = primaryPage;
     }
 
-    const page = context.pages().length ? context.pages()[0] : await context.newPage();
     const result = await fn(page);
 
     if (params.recordVideo) {

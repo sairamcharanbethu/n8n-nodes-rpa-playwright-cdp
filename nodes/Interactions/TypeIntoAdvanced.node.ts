@@ -244,7 +244,6 @@ export class TypeIntoAdvanced implements INodeType {
 
       try {
         const { videoRecording } = await executeWithRecording(session, { recordVideo, videoResolution }, async (page) => {
-          await page.waitForLoadState('domcontentloaded', { timeout: 9000 });
 
         typingResult.currentUrl = await page.url();
         typingResult.selector = selector;
