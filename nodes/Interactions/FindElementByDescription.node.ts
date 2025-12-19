@@ -165,10 +165,28 @@ export class FindElementByDescription implements INodeType {
     const parseAiJson = (text: string) => {
       try {
         const cleaned = text.replace(/```(json)?\n?/g, '').replace(/```$/, '').trim();
-        return JSON.parse(cleaned);
+        // Remove conversational preambles/postambles by finding first { and last }
+        const start = cleaned.indexOf('{');
+        const end = cleaned.lastIndexOf('}');
+        if (start === -1 || end === -1) throw new Error('No JSON object found in AI response');
+        let jsonStr = cleaned.slice(start, end + 1);
+
+        // Strip single line comments
+        jsonStr = jsonStr.replace(/\/\/.*$/gm, '');
+        // Strip multi-line comments
+        jsonStr = jsonStr.replace(/\/\*[\s\S]*?\*\//g, '');
+
+        return JSON.parse(jsonStr);
       } catch (e) {
+        // Final fallback: just try to find the first occurrence of { ... }
         const match = text.match(/\{[\s\S]*\}/);
-        if (match) return JSON.parse(match[0]);
+        if (match) {
+          try {
+            return JSON.parse(match[0].replace(/\/\/.*$/gm, ''));
+          } catch (e2) {
+            throw e;
+          }
+        }
         throw e;
       }
     };
@@ -265,13 +283,38 @@ export class FindElementByDescription implements INodeType {
         // 1. Heuristic Search
         if (heuristicSearch) {
           const descLower = description.toLowerCase();
+          // Intent-based fuzzy mapping
+          const keywords = descLower.split(/\s+/).filter(w => w.length > 2);
+
           for (const cand of candidates) {
-            const matches = [cand.id, cand.name, cand.placeholder, cand.text, cand.ariaLabel].some(v => String(v).toLowerCase() === descLower);
-            if (matches) {
-              const possible = [cand.id ? `#${cand.id}` : null, cand.name ? `[name="${cand.name}"]` : null, cand.placeholder ? `[placeholder="${cand.placeholder}"]` : null, cand.text ? `${cand.tagName}:has-text("${cand.text}")` : null].filter(Boolean) as string[];
+            const id = String(cand.id).toLowerCase();
+            const name = String(cand.name).toLowerCase();
+            const ph = String(cand.placeholder).toLowerCase();
+            const text = String(cand.text).toLowerCase();
+            const aria = String(cand.ariaLabel).toLowerCase();
+
+            const isExact = [id, name, ph, text, aria].some(v => v === descLower);
+            const isFuzzy = keywords.length > 0 && keywords.every(kw =>
+              id.includes(kw) || name.includes(kw) || ph.includes(kw) || text.includes(kw) || aria.includes(kw)
+            );
+
+            if (isExact || isFuzzy) {
+              const possible = [
+                cand.id ? `#${cand.id}` : null,
+                cand.name ? `[name="${cand.name}"]` : null,
+                cand.placeholder ? `[placeholder="${cand.placeholder}"]` : null,
+                cand.text ? `${cand.tagName}:has-text("${cand.text}")` : null
+              ].filter(Boolean) as string[];
+
               for (const sel of possible) {
                 const count = await page.evaluate((s) => (globalThis as any).document.querySelectorAll(s).length, sel);
-                if (count === 1) { selector = sel; validated = true; confidence = 0.98; reasoning = `Heuristic match: Unique element found via ${sel}.`; break; }
+                if (count === 1) {
+                  selector = sel;
+                  validated = true;
+                  confidence = isExact ? 0.98 : 0.85;
+                  reasoning = `Heuristic match (${isExact ? 'exact' : 'fuzzy'}): Unique element found via ${sel}.`;
+                  break;
+                }
               }
             }
             if (validated) break;
@@ -290,7 +333,29 @@ export class FindElementByDescription implements INodeType {
             let attempt = 0;
             while (attempt < maxAttempts && !validated) {
               attempt++;
-              const prompt = `Find CSS selector for: "${description}". Type: "${elementType}". URL: ${await page.url()}\nReturn strictly JSON: { "selector": "...", "confidence": 0.9, "reasoning": "...", "alternatives": [] }\nHTML: ${getRelevantHTML(chunk, 15000)}`;
+              const prompt = `
+Task: Find the best CSS selector for the element described below.
+Description: "${description}"
+Required Element Type: "${elementType}"
+Current Page URL: ${await page.url()}
+
+Constraints:
+1. Return ONLY a valid JSON object. No preamble, no explanation.
+2. Use double quotes for all keys and string values.
+3. DO NOT include any comments (// or /*) in the JSON.
+4. Preferred selector priority: ID > Name > Placeholder > Data Attributes > Unique text > Hierarchy.
+
+Output Format Example:
+{
+  "selector": "#login-button",
+  "confidence": 0.95,
+  "reasoning": "Found unique button with ID 'login-button'",
+  "alternatives": ["[type='submit']"]
+}
+
+HTML Snippet:
+${getRelevantHTML(chunk, 15000)}
+`.trim();
 
               let body: any = {};
               if (aiProvider === 'openai' || aiProvider === 'openrouter') body = { model, messages: [{ role: 'user', content: prompt }], temperature: 0.1 };
