@@ -7,6 +7,8 @@ import {
 } from 'n8n-workflow';
 import { chromium } from 'playwright';
 import { SessionObject } from '../../utils/SessionObject';
+import { executeWithRecording } from '../../utils/sessionManager';
+import * as fs from 'fs';
 
 // Type declarations for DOM elements
 declare global {
@@ -105,6 +107,25 @@ export class TypeInto implements INodeType {
         type: 'number',
         default: 0,
         description: 'Wait time after typing is complete',
+      },
+      {
+        displayName: 'Record Video',
+        name: 'recordVideo',
+        type: 'boolean',
+        default: false,
+        description: 'Whether to record a video of this specific action',
+      },
+      {
+        displayName: 'Video Resolution',
+        name: 'videoResolution',
+        type: 'string',
+        default: '1280,720',
+        description: 'Resolution for the recorded video, e.g. 1280,720',
+        displayOptions: {
+          show: {
+            recordVideo: [true],
+          },
+        },
       }
     ]
   };
@@ -125,93 +146,85 @@ export class TypeInto implements INodeType {
       const pressEnter = this.getNodeParameter('pressEnter', i, false) as boolean;
       const pressTab = this.getNodeParameter('pressTab', i, false) as boolean;
       const waitAfter = this.getNodeParameter('waitAfter', i, 0) as number;
+      const recordVideo = this.getNodeParameter('recordVideo', i, false) as boolean;
+      const videoResolution = this.getNodeParameter('videoResolution', i, '1280,720') as string;
 
       let typingResult: any = {};
-      let browser = null;
-      let page = null;
 
       try {
-        // Connect to browser via CDP
-        browser = await chromium.connectOverCDP(cdpUrl);
-        const context = browser.contexts()[0];
-        page = context.pages()[0] || (await context.newPage());
+        const { videoRecording } = await executeWithRecording(session, { recordVideo, videoResolution }, async (page) => {
+          // Wait for page to be ready
+          await page.waitForLoadState('domcontentloaded', { timeout: 9000 });
 
-        // Wait for page to be ready
-        await page.waitForLoadState('domcontentloaded', { timeout: 9000 });
+          // Basic debug info
+          typingResult.currentUrl = await page.url();
+          typingResult.selector = selector;
 
-        // Basic debug info
-        typingResult.currentUrl = await page.url();
-        typingResult.selector = selector;
+          // Wait for element to be available
+          await page.waitForSelector(selector, { timeout: waitTimeout });
 
-        // Wait for element to be available
-        await page.waitForSelector(selector, { timeout: waitTimeout });
+          // Get the element
+          const el = await page.$(selector);
+          if (!el) throw new Error('Selector not found after wait');
 
-        // Get the element
-        const el = await page.$(selector);
-        if (!el) throw new Error('Selector not found after wait');
+          // Get element information for debugging
+          typingResult.elementTag = await el.evaluate(el => el.tagName);
+          typingResult.valueBefore = await el.evaluate(el => (el as any).value || el.textContent || '');
 
-        // Get element information for debugging
-        typingResult.elementTag = await el.evaluate(el => el.tagName);
-        typingResult.valueBefore = await el.evaluate(el => (el as any).value || el.textContent || '');
+          // Click element first if requested (helps with focus)
+          if (clickFirst) { await el.click(); }
 
-        // Click element first if requested (helps with focus)
-        if (clickFirst) {
-          await el.click();
+          // Clear field if requested
+          if (clearFirst) { await el.fill(''); }
+
+          // Type the text with optional delay
+          if (typingDelay > 0) {
+            await el.focus();
+            await page.keyboard.type(text, { delay: typingDelay });
+          } else {
+            await el.fill(text);
+          }
+
+          // Press Enter if requested
+          if (pressEnter) { await page.keyboard.press('Enter'); }
+
+          // Press Tab if requested
+          if (pressTab) { await page.keyboard.press('Tab'); }
+
+          // Wait after typing if requested
+          if (waitAfter > 0) { await page.waitForTimeout(waitAfter); }
+
+          // Get final value for verification
+          typingResult.valueAfter = await el.evaluate(el => (el as any).value || el.textContent || '');
+
+          // Success result
+          typingResult.result = 'success';
+          typingResult.textTyped = text;
+        });
+
+        const output: INodeExecutionData = { json: { ...session, typeAction: typingResult } };
+
+        if (videoRecording && fs.existsSync(videoRecording)) {
+          const videoBuffer = fs.readFileSync(videoRecording);
+          output.binary = {
+            video: {
+              data: videoBuffer.toString('base64'),
+              mimeType: 'video/webm',
+              fileName: 'type_recording.webm',
+            }
+          };
+          try { fs.unlinkSync(videoRecording); } catch (err) {}
         }
-
-        // Clear field if requested
-        if (clearFirst) {
-          await el.fill('');
-        }
-
-        // Type the text with optional delay
-        if (typingDelay > 0) {
-          await el.focus();
-          await page.keyboard.type(text, { delay: typingDelay });
-        } else {
-          await el.fill(text);
-        }
-
-        // Press Enter if requested
-        if (pressEnter) {
-          await page.keyboard.press('Enter');
-        }
-
-        // Press Tab if requested
-        if (pressTab) {
-          await page.keyboard.press('Tab');
-        }
-
-        // Wait after typing if requested
-        if (waitAfter > 0) {
-          await page.waitForTimeout(waitAfter);
-        }
-
-        // Get final value for verification
-        typingResult.valueAfter = await el.evaluate(el => (el as any).value || el.textContent || '');
-
-        // Success result
-        typingResult.result = 'success';
-        typingResult.textTyped = text;
-
-        await browser.close();
+        results.push(output);
 
       } catch (e) {
         const errorMsg = (e as Error).message;
-
-        // Error result with context
         typingResult.result = 'error';
         typingResult.error = errorMsg;
         typingResult.selector = selector;
         typingResult.textToType = text;
-
-        if (browser) {
-          await browser.close().catch(() => {});
-        }
+        results.push({ json: {...session, typeAction: typingResult} });
       }
-
-      // Push result WITH session data to maintain browser connection for RPA workflows
-      results.push({json: {...session, typeAction: typingResult}});
     }
 
     return [results];

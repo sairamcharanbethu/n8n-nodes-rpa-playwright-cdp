@@ -7,6 +7,8 @@ import {
 } from 'n8n-workflow';
 import { chromium, Browser } from 'playwright';
 import { SessionObject } from '../../utils/SessionObject';
+import { executeWithRecording } from '../../utils/sessionManager';
+import * as fs from 'fs';
 
 export class Click implements INodeType {
   description: INodeTypeDescription = {
@@ -115,6 +117,25 @@ export class Click implements INodeType {
         ],
         default: 'center',
         description: 'Position within element to click',
+      },
+      {
+        displayName: 'Record Video',
+        name: 'recordVideo',
+        type: 'boolean',
+        default: false,
+        description: 'Whether to record a video of this specific action',
+      },
+      {
+        displayName: 'Video Resolution',
+        name: 'videoResolution',
+        type: 'string',
+        default: '1280,720',
+        description: 'Resolution for the recorded video, e.g. 1280,720',
+        displayOptions: {
+          show: {
+            recordVideo: [true],
+          },
+        },
       }
     ]
   };
@@ -136,118 +157,113 @@ export class Click implements INodeType {
       const waitForNavigation = this.getNodeParameter('waitForNavigation', i, false) as boolean;
       const navigationTimeout = this.getNodeParameter('navigationTimeout', i, 30000) as number;
       const clickPosition = this.getNodeParameter('clickPosition', i, 'center') as string;
+      const recordVideo = this.getNodeParameter('recordVideo', i, false) as boolean;
+      const videoResolution = this.getNodeParameter('videoResolution', i, '1280,720') as string;
 
       let clickResult: any = {};
-      let browser: Browser | null = null;
 
       try {
-        // Connect to browser via CDP
-        browser = await chromium.connectOverCDP(cdpUrl);
-        const context = browser.contexts()[0];
-        const page = context.pages()[0] || await context.newPage();
+        const { videoRecording } = await executeWithRecording(session, { recordVideo, videoResolution }, async (page) => {
+          // Wait for page to be ready
+          await page.waitForLoadState('domcontentloaded', { timeout: 9000 });
 
-        // Wait for page to be ready
-        await page.waitForLoadState('domcontentloaded', { timeout: 9000 });
+          // Basic debug info
+          clickResult.currentUrl = await page.url();
+          clickResult.selector = selector;
 
-        // Basic debug info
-        clickResult.currentUrl = await page.url();
-        clickResult.selector = selector;
+          // Wait for element to be available
+          await page.waitForSelector(selector, { timeout: waitTimeout });
+          const elHandle = await page.$(selector);
+          if (!elHandle) throw new Error(`Element with selector "${selector}" not found`);
 
-        // Wait for element to be available
-        await page.waitForSelector(selector, { timeout: waitTimeout });
-        const elHandle = await page.$(selector);
-        if (!elHandle) throw new Error(`Element with selector "${selector}" not found`);
+          // Get element information for debugging
+          clickResult.elementTag = await elHandle.evaluate(el => el.tagName);
+          clickResult.elementVisible = await elHandle.isVisible();
+          clickResult.elementEnabled = await elHandle.isEnabled();
 
-        // Get element information for debugging
-        clickResult.elementTag = await elHandle.evaluate(el => el.tagName);
-        clickResult.elementVisible = await elHandle.isVisible();
-        clickResult.elementEnabled = await elHandle.isEnabled();
+          // Scroll into view if requested
+          if (scrollIntoView) {
+            await elHandle.scrollIntoViewIfNeeded();
+            clickResult.scrolledIntoView = true;
+          }
 
-        // Scroll into view if requested
-        if (scrollIntoView) {
-          await elHandle.scrollIntoViewIfNeeded();
-          clickResult.scrolledIntoView = true;
-        }
+          // Wait before click if requested
+          if (waitBefore > 0) {
+            await page.waitForTimeout(waitBefore);
+          }
 
-        // Wait before click if requested
-        if (waitBefore > 0) {
-          await page.waitForTimeout(waitBefore);
-        }
-
-        // Determine click position
-        let position = undefined;
-        if (clickPosition !== 'center') {
-          const box = await elHandle.boundingBox();
-          if (box) {
-            switch (clickPosition) {
-              case 'top-left':
-                position = { x: box.x + 1, y: box.y + 1 };
-                break;
-              case 'top-right':
-                position = { x: box.x + box.width - 1, y: box.y + 1 };
-                break;
-              case 'bottom-left':
-                position = { x: box.x + 1, y: box.y + box.height - 1 };
-                break;
-              case 'bottom-right':
-                position = { x: box.x + box.width - 1, y: box.y + box.height - 1 };
-                break;
+          // Determine click position
+          let position = undefined;
+          if (clickPosition !== 'center') {
+            const box = await elHandle.boundingBox();
+            if (box) {
+              switch (clickPosition) {
+                case 'top-left': position = { x: box.x + 1, y: box.y + 1 }; break;
+                case 'top-right': position = { x: box.x + box.width - 1, y: box.y + 1 }; break;
+                case 'bottom-left': position = { x: box.x + 1, y: box.y + box.height - 1 }; break;
+                case 'bottom-right': position = { x: box.x + box.width - 1, y: box.y + box.height - 1 }; break;
+              }
             }
           }
+
+          // Setup navigation promise if needed
+          let navigationPromise;
+          if (waitForNavigation) {
+            navigationPromise = page.waitForNavigation({ timeout: navigationTimeout });
+          }
+
+          // Perform the click based on type
+          const clickOptions = { force: forceClick, position };
+          if (clickType === 'double') {
+            await elHandle.dblclick(clickOptions);
+          } else if (clickType === 'right') {
+            await elHandle.click({ ...clickOptions, button: 'right' });
+          } else {
+            await elHandle.click(clickOptions);
+          }
+
+          clickResult.clickPerformed = true;
+
+          // Wait for navigation if requested
+          if (waitForNavigation && navigationPromise) {
+            await navigationPromise;
+            clickResult.navigationCompleted = true;
+            clickResult.newUrl = await page.url();
+          }
+
+          // Wait after click if requested
+          if (waitAfter > 0) {
+            await page.waitForTimeout(waitAfter);
+          }
+
+          // Success result
+          clickResult.result = 'success';
+          clickResult.clickType = clickType;
+        });
+
+        const output: INodeExecutionData = { json: { ...session, clickAction: clickResult } };
+
+        if (videoRecording && fs.existsSync(videoRecording)) {
+          const videoBuffer = fs.readFileSync(videoRecording);
+          output.binary = {
+            video: {
+              data: videoBuffer.toString('base64'),
+              mimeType: 'video/webm',
+              fileName: 'click_recording.webm',
+            }
+          };
+          try { fs.unlinkSync(videoRecording); } catch (err) {}
         }
-
-        // Setup navigation promise if needed
-        let navigationPromise;
-        if (waitForNavigation) {
-          navigationPromise = page.waitForNavigation({ timeout: navigationTimeout });
-        }
-
-        // Perform the click based on type
-        const clickOptions = { force: forceClick, position };
-        if (clickType === 'double') {
-          await elHandle.dblclick(clickOptions);
-        } else if (clickType === 'right') {
-          await elHandle.click({ ...clickOptions, button: 'right' });
-        } else {
-          await elHandle.click(clickOptions);
-        }
-
-        clickResult.clickPerformed = true;
-
-        // Wait for navigation if requested
-        if (waitForNavigation && navigationPromise) {
-          await navigationPromise;
-          clickResult.navigationCompleted = true;
-          clickResult.newUrl = await page.url();
-        }
-
-        // Wait after click if requested
-        if (waitAfter > 0) {
-          await page.waitForTimeout(waitAfter);
-        }
-
-        // Success result
-        clickResult.result = 'success';
-        clickResult.clickType = clickType;
-
-        await browser.close();
+        results.push(output);
 
       } catch (e) {
         const errorMsg = (e as Error).message;
-
-        // Error result with context
         clickResult.result = 'error';
         clickResult.error = errorMsg;
         clickResult.selector = selector;
         clickResult.clickType = clickType;
-
-        if (browser) {
-          await browser.close().catch(() => {});
-        }
+        results.push({ json: {...session, clickAction: clickResult} });
       }
-
-      // Push result WITH session data to maintain browser connection for RPA workflows
-      results.push({ json: {...session, clickAction: clickResult} });
     }
 
     return [results];

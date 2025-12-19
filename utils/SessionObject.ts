@@ -9,4 +9,5 @@ export interface SessionObject {
   step?: string;
   message?: string;
   error?: string;
+  videoRecording?: string; // Base64 encoded video data or path
 }

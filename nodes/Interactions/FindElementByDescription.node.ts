@@ -128,41 +128,93 @@ export class FindElementByDescription implements INodeType {
         default: 3,
         description: 'Number of AI retries per HTML chunk before failing',
       },
+      {
+        displayName: 'Discovery Mode (Connectivity Check)',
+        name: 'discoveryMode',
+        type: 'boolean',
+        default: false,
+        description: 'If enabled, list all candidate elements on the page instead of finding one',
+      },
+      {
+        displayName: 'Heuristic Search',
+        name: 'heuristicSearch',
+        type: 'boolean',
+        default: true,
+        description: 'Attempt to find elements using standard attributes before calling AI',
+        displayOptions: {
+          hide: { discoveryMode: [true] },
+        },
+      },
+      {
+        displayName: 'Use AI Fallback',
+        name: 'useAI',
+        type: 'boolean',
+        default: true,
+        description: 'Whether to use AI if heuristic search fails',
+        displayOptions: {
+          hide: { discoveryMode: [true] },
+        },
+      },
     ],
   };
-
-
 
   async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
     const items = this.getInputData();
     const results: INodeExecutionData[] = [];
-  function parseAiJson(text: string) {
-    const cleaned = text.replace(/```(json)?\n?/g, '').replace(/```$/, '').trim();
-    return JSON.parse(cleaned);
-  }
 
-  function getRelevantHTML(html: string, maxLength = 35000): string {
-    if (html.length <= maxLength) return html;
-    const mid = Math.floor(html.length / 2);
-    const start = Math.max(0, mid - maxLength / 2);
-    return html.slice(start, start + maxLength);
-  }
+    const parseAiJson = (text: string) => {
+      try {
+        const cleaned = text.replace(/```(json)?\n?/g, '').replace(/```$/, '').trim();
+        return JSON.parse(cleaned);
+      } catch (e) {
+        const match = text.match(/\{[\s\S]*\}/);
+        if (match) return JSON.parse(match[0]);
+        throw e;
+      }
+    };
+
+    const getRelevantHTML = (html: string, maxLength = 35000): string => {
+      if (html.length <= maxLength) return html;
+      const mid = Math.floor(html.length / 2);
+      const start = Math.max(0, mid - maxLength / 2);
+      return html.slice(start, start + maxLength);
+    };
+
+    const getRelevantHTMLByType = (html: string, elementType: string, maxLength = 35000): string => {
+      let relevant = '';
+      switch (elementType.toLowerCase()) {
+        case 'input': relevant = html.match(/<input[^>]*>/gi)?.join('\n') || ''; break;
+        case 'button': relevant = html.match(/<button[^>]*>[\s\S]*?<\/button>/gi)?.join('\n') || ''; break;
+        case 'select': relevant = html.match(/<select[^>]*>[\s\S]*?<\/select>/gi)?.join('\n') || ''; break;
+        case 'checkbox': relevant = html.match(/<input[^>]*type=["']?checkbox["']?[^>]*>/gi)?.join('\n') || ''; break;
+        case 'radio': relevant = html.match(/<input[^>]*type=["']?radio["']?[^>]*>/gi)?.join('\n') || ''; break;
+        case 'textarea': relevant = html.match(/<textarea[^>]*>[\s\S]*?<\/textarea>/gi)?.join('\n') || ''; break;
+        case 'div': relevant = html.match(/<div[^>]*>[\s\S]*?<\/div>/gi)?.join('\n') || ''; break;
+        case 'a': relevant = html.match(/<a[^>]*>[\s\S]*?<\/a>/gi)?.join('\n') || ''; break;
+        case 'img': relevant = html.match(/<img[^>]*>/gi)?.join('\n') || ''; break;
+        case 'span': relevant = html.match(/<span[^>]*>[\s\S]*?<\/span>/gi)?.join('\n') || ''; break;
+        case 'p': relevant = html.match(/<p[^>]*>[\s\S]*?<\/p>/gi)?.join('\n') || ''; break;
+        case 'h1,h2,h3,h4,h5,h6': relevant = html.match(/<h[1-6][^>]*>[\s\S]*?<\/h[1-6]>/gi)?.join('\n') || ''; break;
+        case 'table': relevant = html.match(/<table[^>]*>[\s\S]*?<\/table>/gi)?.join('\n') || ''; break;
+        default: relevant = html;
+      }
+      if (!relevant) relevant = html;
+      return relevant.length > maxLength ? relevant.slice(0, maxLength) : relevant;
+    };
+
     const credentials = await this.getCredentials('aiProviderApi');
-
     if (!credentials) throw new Error('No credentials provided for AI provider.');
-    if ((credentials.provider === 'openai' || credentials.provider === 'openrouter') && !credentials.apiKey) {
-      throw new Error('API Key missing for OpenAI / OpenRouter');
-    }
-    if (credentials.provider === 'gemini' && !credentials.googleApiKey) {
-      throw new Error('Google API Key missing for Gemini');
-    }
 
     for (let i = 0; i < items.length; i++) {
       const session = items[i].json as unknown as SessionObject;
-			const cdpUrl = this.getNodeParameter('cdpUrl', i) as string;
+      const cdpUrl = this.getNodeParameter('cdpUrl', i) as string;
       const description = this.getNodeParameter('description', i) as string;
       const aiProvider = this.getNodeParameter('aiProvider', i) as string;
       const maxAttempts = this.getNodeParameter('maxAttempts', i, 3) as number;
+      const discoveryMode = this.getNodeParameter('discoveryMode', i, false) as boolean;
+      const heuristicSearch = this.getNodeParameter('heuristicSearch', i, true) as boolean;
+      const useAI = this.getNodeParameter('useAI', i, true) as boolean;
+      const elementType = this.getNodeParameter('elementType', i) as string;
 
       let model = '';
       let ollamaUrl = '';
@@ -175,385 +227,125 @@ export class FindElementByDescription implements INodeType {
         ollamaUrl = this.getNodeParameter('ollamaUrl', i) as string || credentials.ollamaUrl as string || 'http://localhost:11434';
       }
 
-      if (!cdpUrl) throw new Error('Session object missing cdpUrl.');
-
       let browser: Browser | null = null;
       let page: Page | null = null;
-      let pageHTML = '';
-      let bodyHTML = '';
+      let candidates: any[] = [];
+      let selector = '', confidence = 0, reasoning = '', alternatives: string[] = [], validated = false;
+      const aiStats = { totalTokens: 0, promptTokens: 0, completionTokens: 0, totalDurationMs: 0, apiCalls: 0 };
 
       try {
         browser = await chromium.connectOverCDP(cdpUrl);
         const context = browser.contexts()[0];
         page = context.pages()[0] || (await context.newPage());
         await page.waitForLoadState('domcontentloaded', { timeout: 9000 });
-        const rawHTML = await page.content();
 
-        pageHTML = rawHTML
-          .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-          .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
-          .replace(/<!--[\s\S]*?-->/g, '');
-        bodyHTML = pageHTML.match(/<body[^>]*>([\s\S]*)<\/body>/i)?.[1] || pageHTML;
-      } catch (e) {
-        if (browser) await browser.close().catch(() => {});
-        throw new Error('Could not connect to browser/obtain HTML: ' + (e as Error).message);
-      }
+        candidates = await page.evaluate((type) => {
+          const sel = type === '*' ? 'body *' : type;
+          const elements = Array.from((globalThis as any).document.querySelectorAll(sel));
+          return elements.map((el: any, index: number) => ({
+            index,
+            tagName: el.tagName.toLowerCase(),
+            text: el.textContent?.trim().slice(0, 100) || '',
+            id: el.id || '',
+            name: el.name || '',
+            class: el.className || '',
+            placeholder: el.placeholder || '',
+            type: el.type || '',
+            ariaLabel: el.getAttribute('aria-label') || '',
+            isVisible: el.offsetWidth > 0 && el.offsetHeight > 0,
+          }));
+        }, elementType);
 
-      let attempts = 0,
-        selector = '',
-        confidence = 0,
-        reasoning = '',
-        alternatives: string[] = [],
-        validated = false;
+        if (discoveryMode) {
+          results.push({ json: { ...session, discoveryResults: { totalCandidates: candidates.length, candidates: candidates.slice(0, 100) } } });
+          if (browser) await browser.close();
+          continue;
+        }
 
-      const aiStats = {
-        totalTokens: 0,
-        promptTokens: 0,
-        completionTokens: 0,
-        totalDurationMs: 0,
-        apiCalls: 0,
-      };
-function getRelevantHTMLByType(html: string, elementType: string, maxLength = 35000): string {
-  let relevant = '';
-
-  switch (elementType.toLowerCase()) {
-    case 'input':
-      relevant = html.match(/<input[^>]*>/gi)?.join('\n') || '';
-      break;
-    case 'button':
-      relevant = html.match(/<button[^>]*>[\s\S]*?<\/button>/gi)?.join('\n') || '';
-      break;
-    case 'select':
-      relevant = html.match(/<select[^>]*>[\s\S]*?<\/select>/gi)?.join('\n') || '';
-      break;
-    case 'checkbox':
-      relevant = html.match(/<input[^>]*type=["']?checkbox["']?[^>]*>/gi)?.join('\n') || '';
-      break;
-    case 'radio':
-      relevant = html.match(/<input[^>]*type=["']?radio["']?[^>]*>/gi)?.join('\n') || '';
-      break;
-    case 'textarea':
-      relevant = html.match(/<textarea[^>]*>[\s\S]*?<\/textarea>/gi)?.join('\n') || '';
-      break;
-    case 'div':
-      relevant = html.match(/<div[^>]*>[\s\S]*?<\/div>/gi)?.join('\n') || '';
-      break;
-    case 'a':
-      relevant = html.match(/<a[^>]*>[\s\S]*?<\/a>/gi)?.join('\n') || '';
-      break;
-    case 'img':
-      relevant = html.match(/<img[^>]*>/gi)?.join('\n') || '';
-      break;
-    case 'span':
-      relevant = html.match(/<span[^>]*>[\s\S]*?<\/span>/gi)?.join('\n') || '';
-      break;
-    case 'p':
-      relevant = html.match(/<p[^>]*>[\s\S]*?<\/p>/gi)?.join('\n') || '';
-      break;
-    case 'h1,h2,h3,h4,h5,h6':
-      relevant = html.match(/<h[1-6][^>]*>[\s\S]*?<\/h[1-6]>/gi)?.join('\n') || '';
-      break;
-    case 'table':
-      relevant = html.match(/<table[^>]*>[\s\S]*?<\/table>/gi)?.join('\n') || '';
-      break;
-    case '*': // "Other"
-      relevant = html;
-      break;
-    default:
-      relevant = html;
-  }
-
-  if (!relevant) relevant = html;
-
-  if (relevant.length > maxLength) {
-    return relevant.slice(0, maxLength);
-  }
-
-  return relevant;
-}
-			bodyHTML = getRelevantHTMLByType(bodyHTML, this.getNodeParameter('elementType', i) as string, 35000);
-      // ------------------------
-      // Slice HTML into chunks for multiple attempts
-      // ------------------------
-      const chunkSize = 35000;
-      const htmlChunks: string[] = [];
-      for (let start = 0; start < bodyHTML.length; start += chunkSize) {
-        htmlChunks.push(bodyHTML.slice(start, start + chunkSize));
-      }
-
-      for (const chunk of htmlChunks) {
-        attempts = 0;
-        while (attempts < maxAttempts && !validated) {
-          attempts++;
-					const elementType = this.getNodeParameter('elementType', i) as string;
-          const prompt = `
-You are an RPA agent. Given this HTML, find the best CSS selector for the element described as: "${description}"
-and ensure it is of type "${elementType}" (e.g., input, button, select, etc.).
-
-Requirements:
-1. Prefer selectors using the element's unique ID attribute first, if available.
-2. If no ID is available, use other unique attributes (e.g., name, class, data-*).
-3. If neither exists, use the element's position in the hierarchy (parent/child).
-4. Ensure the selector works with Playwright's page.$() or page.locator().
-5. Provide alternatives following the same priority.
-6. Do not use XPath or overly generic selectors (e.g., div, span).
-
-HTML snippet:
-${getRelevantHTML(chunk, 35000)}
-
-Return your answer strictly in JSON format with the following keys:
-- selector: The best CSS selector as a string.
-- confidence: A number between 0 and 1 indicating confidence in the selector's reliability.
-- reasoning: A brief explanation of why this selector was chosen.
-- alternatives: An array of alternative selectors, if any.
-
-Here is the relevant JSON format example:
-{
-  "selector": "<playwright_selector>",
-  "confidence": 0.0 to 1.0,
-  "reasoning": "<Why this selector>",
-  "alternatives": ["<other selectors>"]
-}
-`.trim();
-
-          let apiUrl = '';
-          let headers: any = {};
-          let body: any = {};
-
-          if (aiProvider === 'openai') {
-            apiUrl = 'https://api.openai.com/v1/chat/completions';
-            headers = { Authorization: `Bearer ${credentials.apiKey}` };
-            body = { model, messages: [{ role: 'user', content: prompt }], temperature: 0.1, max_tokens: 400 };
-          } else if (aiProvider === 'openrouter') {
-            apiUrl = 'https://openrouter.ai/api/v1/chat/completions';
-            headers = { Authorization: `Bearer ${credentials.apiKey}` };
-            body = { model, messages: [{ role: 'user', content: prompt }], temperature: 0.1, max_tokens: 400 };
-          } else if (aiProvider === 'gemini') {
-            apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${credentials.googleApiKey}`;
-            headers = { 'Content-Type': 'application/json' };
-            body = { contents: [{ parts: [{ text: prompt }] }] };
-          } else if (aiProvider === 'ollama') {
-            apiUrl = `${ollamaUrl}/api/chat`;
-            headers = { 'Content-Type': 'application/json' };
-            body = {
-              model,
-              messages: [{ role: 'user', content: prompt }],
-              stream: false,
-              options: { temperature: 0.1 },
-            };
-          }
-
-          try {
-            const startTime = Date.now();
-            const aiResponse = await axios.post(apiUrl, body, { headers });
-            aiStats.totalDurationMs += Date.now() - startTime;
-            aiStats.apiCalls++;
-
-            let parsed: any = {};
-
-            if (aiProvider === 'gemini') {
-              const geminiContent = aiResponse.data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-              parsed = typeof geminiContent === 'string' ? parseAiJson(geminiContent) : geminiContent;
-              // Gemini token stats (if available in response)
-              if (aiResponse.data.usageMetadata) {
-                aiStats.promptTokens += aiResponse.data.usageMetadata.promptTokenCount || 0;
-                aiStats.completionTokens += aiResponse.data.usageMetadata.candidatesTokenCount || 0;
-                aiStats.totalTokens += aiResponse.data.usageMetadata.totalTokenCount || 0;
-              }
-            } else if (aiProvider === 'ollama') {
-              const content = aiResponse.data.message?.content ?? '';
-              parsed = typeof content === 'string' ? parseAiJson(content) : content;
-              aiStats.promptTokens += aiResponse.data.prompt_eval_count || 0;
-              aiStats.completionTokens += aiResponse.data.eval_count || 0;
-              aiStats.totalTokens += (aiResponse.data.prompt_eval_count || 0) + (aiResponse.data.eval_count || 0);
-            } else {
-              const content = aiResponse.data.choices?.[0]?.message?.content ?? aiResponse.data.choices?.[0]?.text ?? '';
-              parsed = typeof content === 'string' ? parseAiJson(content) : content;
-              if (aiResponse.data.usage) {
-                aiStats.promptTokens += aiResponse.data.usage.prompt_tokens || 0;
-                aiStats.completionTokens += aiResponse.data.usage.completion_tokens || 0;
-                aiStats.totalTokens += aiResponse.data.usage.total_tokens || 0;
+        // 1. Heuristic Search
+        if (heuristicSearch) {
+          const descLower = description.toLowerCase();
+          for (const cand of candidates) {
+            const matches = [cand.id, cand.name, cand.placeholder, cand.text, cand.ariaLabel].some(v => String(v).toLowerCase() === descLower);
+            if (matches) {
+              const possible = [cand.id ? `#${cand.id}` : null, cand.name ? `[name="${cand.name}"]` : null, cand.placeholder ? `[placeholder="${cand.placeholder}"]` : null, cand.text ? `${cand.tagName}:has-text("${cand.text}")` : null].filter(Boolean) as string[];
+              for (const sel of possible) {
+                const count = await page.evaluate((s) => (globalThis as any).document.querySelectorAll(s).length, sel);
+                if (count === 1) { selector = sel; validated = true; confidence = 0.98; reasoning = `Heuristic match: Unique element found via ${sel}.`; break; }
               }
             }
-
-            selector = parsed.selector || '';
-            confidence = parsed.confidence || 0;
-            reasoning = parsed.reasoning || '';
-            alternatives = parsed.alternatives || [];
-
-            // ------------------------
-            // Validate selector + alternatives
-            // ------------------------
-            // for (const sel of [selector, ...alternatives]) {
-            //   if (!sel || !page) continue;
-            //   try {
-            //     const elementHandle = await page.$(sel);
-            //     if (elementHandle) {
-            //       selector = sel;
-            //       validated = true;
-            //       break;
-            //     }
-            //   } catch {
-            //     validated = false;
-            //   }
-            // }
-						for (const sel of [selector, ...alternatives]) {
-							if (!sel || !page) continue;
-							try {
-								const elementHandle = await page.$(sel);
-								if (elementHandle) {
-									// Get tagName to validate against requested type
-									const tagName = (await elementHandle.evaluate(el => el.tagName.toLowerCase())) || '';
-									const typeAttr = (await elementHandle.evaluate(el => el.getAttribute('type'))) || '';
-
-									const elementType = (this.getNodeParameter('elementType', i) as string).toLowerCase();
-
-									let typeMatches = false;
-									switch (elementType) {
-										case 'input': typeMatches = tagName === 'input'; break;
-										case 'button': typeMatches = tagName === 'button'; break;
-										case 'select': typeMatches = tagName === 'select'; break;
-										case 'checkbox': typeMatches = tagName === 'input' && typeAttr === 'checkbox'; break;
-										case 'radio': typeMatches = tagName === 'input' && typeAttr === 'radio'; break;
-										case 'textarea': typeMatches = tagName === 'textarea'; break;
-										case 'div': typeMatches = tagName === 'div'; break;
-										case 'a': typeMatches = tagName === 'a'; break;
-										case 'img': typeMatches = tagName === 'img'; break;
-										case 'span': typeMatches = tagName === 'span'; break;
-										case 'p': typeMatches = tagName === 'p'; break;
-										case 'h1,h2,h3,h4,h5,h6': typeMatches = /^h[1-6]$/.test(tagName); break;
-										case 'table': typeMatches = tagName === 'table'; break;
-										case '*': typeMatches = true; break;
-									}
-
-									if (typeMatches) {
-										selector = sel;
-										validated = true;
-										break;
-									}
-								}
-							} catch {
-								validated = false;
-							}
-						}
-
-          } catch (err: any) {
-            reasoning = `AI did not return valid JSON or failed: ${err.message}`;
+            if (validated) break;
           }
         }
-        if (validated) break;
-      }
 
-      // ------------------------
-      // "Last Resort" Semantic Fallback (Crawl4AI Inspired)
-      // ------------------------
-      if (!validated && page) {
-        reasoning += " | Standard selector matching failed. Attempting semantic fallback...";
-        try {
-          const elementType = this.getNodeParameter('elementType', i) as string;
-          // Extract elements and their text/attributes
-          const elementsData = await page.evaluate((type) => {
-            const sel = type === '*' ? 'body *' : type;
-            const elements = Array.from((globalThis as any).document.querySelectorAll(sel));
-            return elements.slice(0, 100).map((el: any, index: number) => ({
-              index,
-              text: el.textContent?.trim().slice(0, 50) || '',
-              id: el.id,
-              name: el.name || '',
-              class: el.className,
-              placeholder: el.placeholder || '',
-            }));
-          }, elementType);
+        // 2. AI Search
+        if (!validated && useAI) {
+          const rawHTML = await page.content();
+          let bodyHTML = rawHTML.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '').replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '').replace(/<!--[\s\S]*?-->/g, '');
+          bodyHTML = bodyHTML.match(/<body[^>]*>([\s\S]*)<\/body>/i)?.[1] || bodyHTML;
+          bodyHTML = getRelevantHTMLByType(bodyHTML, elementType, 35000);
 
-          if (elementsData.length > 0) {
-            const semanticPrompt = `
-You are an RPA agent. I am looking for an element described as: "${description}"
-Here is a list of candidate elements of type "${elementType}" found on the page:
-${JSON.stringify(elementsData, null, 2)}
+          const chunks = [bodyHTML]; // Simplification for now, usually one chunk is enough for type-filtered HTML
+          for (const chunk of chunks) {
+            let attempt = 0;
+            while (attempt < maxAttempts && !validated) {
+              attempt++;
+              const prompt = `Find CSS selector for: "${description}". Type: "${elementType}". URL: ${await page.url()}\nReturn strictly JSON: { "selector": "...", "confidence": 0.9, "reasoning": "...", "alternatives": [] }\nHTML: ${getRelevantHTML(chunk, 15000)}`;
 
-Identify the index of the most likely element.
-Return strictly JSON: { "index": number, "reasoning": "string" }
-`.trim();
+              let body: any = {};
+              if (aiProvider === 'openai' || aiProvider === 'openrouter') body = { model, messages: [{ role: 'user', content: prompt }], temperature: 0.1 };
+              else if (aiProvider === 'gemini') body = { contents: [{ parts: [{ text: prompt }] }] };
+              else if (aiProvider === 'ollama') body = { model, messages: [{ role: 'user', content: prompt }], stream: false, options: { temperature: 0.1 } };
 
-            let semanticResponse;
-            const semanticStartTime = Date.now();
+              try {
+                const start = Date.now();
+                const resp = await axios.post(aiProvider === 'gemini' ? `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${credentials.googleApiKey}` : aiProvider === 'ollama' ? `${ollamaUrl}/api/chat` : (aiProvider === 'openai' ? 'https://api.openai.com/v1/chat/completions' : 'https://openrouter.ai/api/v1/chat/completions'), body, { headers: { Authorization: credentials.apiKey ? `Bearer ${credentials.apiKey}` : undefined, 'Content-Type': 'application/json' } });
+                aiStats.totalDurationMs += Date.now() - start; aiStats.apiCalls++;
 
-            // Generate semantic API URL and headers based on provider
-            let sApiUrl = '';
-            let sHeaders: any = {};
-            let sBody: any = {};
+                let content = '';
+                if (aiProvider === 'gemini') content = resp.data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+                else if (aiProvider === 'ollama') content = resp.data.message?.content || '';
+                else content = resp.data.choices?.[0]?.message?.content || '';
 
-            if (aiProvider === 'openai') {
-              sApiUrl = 'https://api.openai.com/v1/chat/completions';
-              sHeaders = { Authorization: `Bearer ${credentials.apiKey}` };
-              sBody = { model, messages: [{ role: 'user', content: semanticPrompt }], temperature: 0.1 };
-            } else if (aiProvider === 'openrouter') {
-              sApiUrl = 'https://openrouter.ai/api/v1/chat/completions';
-              sHeaders = { Authorization: `Bearer ${credentials.apiKey}` };
-              sBody = { model, messages: [{ role: 'user', content: semanticPrompt }], temperature: 0.1 };
-            } else if (aiProvider === 'gemini') {
-              sApiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${credentials.googleApiKey}`;
-              sHeaders = { 'Content-Type': 'application/json' };
-              sBody = { contents: [{ parts: [{ text: semanticPrompt }] }] };
-            } else if (aiProvider === 'ollama') {
-              sApiUrl = `${ollamaUrl}/api/chat`;
-              sHeaders = { 'Content-Type': 'application/json' };
-              sBody = { model, messages: [{ role: 'user', content: semanticPrompt }], stream: false };
+                const parsed = parseAiJson(content);
+                selector = parsed.selector; confidence = parsed.confidence; reasoning = parsed.reasoning; alternatives = parsed.alternatives || [];
+
+                for (const sel of [selector, ...alternatives]) {
+                  if (!sel) continue;
+                  const el = await page.$(sel);
+                  if (el) {
+                    const tag = (await el.evaluate(e => e.tagName.toLowerCase())) || '';
+                    if (elementType === '*' || tag.includes(elementType.split(',')[0])) { selector = sel; validated = true; break; }
+                  }
+                }
+              } catch (e) { reasoning = `AI Error: ${(e as Error).message}`; }
             }
-
-            semanticResponse = await axios.post(sApiUrl, sBody, { headers: sHeaders });
-
-            aiStats.totalDurationMs += Date.now() - semanticStartTime;
-            aiStats.apiCalls++;
-
-            let semanticParsed: any = {};
-            if (aiProvider === 'gemini') {
-              const content = semanticResponse?.data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-              semanticParsed = parseAiJson(content);
-            } else if (aiProvider === 'ollama') {
-              semanticParsed = parseAiJson(semanticResponse?.data.message?.content || '');
-            } else {
-              semanticParsed = parseAiJson(semanticResponse?.data.choices?.[0]?.message?.content || '');
-            }
-
-            if (semanticParsed.index !== undefined && semanticParsed.index >= 0) {
-              const targetIndex = semanticParsed.index;
-              // Generate robust selector based on index for the specific element type
-              selector = `${elementType}:nth-of-type(${targetIndex + 1})`;
-              if (elementType === '*') selector = `*:nth-child(${targetIndex + 1})`;
-
-              // Verify it exists
-              const check = await page.$(selector);
-              if (check) {
-                validated = true;
-                reasoning = `Semantic match: ${semanticParsed.reasoning}`;
-              }
-            }
+            if (validated) break;
           }
-        } catch (e: any) {
-          reasoning += ` | Semantic fallback failed: ${e.message}`;
+
+          // 3. Semantic Fallback
+          if (!validated && candidates.length > 0) {
+            const semPrompt = `Which element matches "${description}"? Candidates: ${JSON.stringify(candidates.slice(0, 50))}\nReturn JSON: { "index": number, "reasoning": "..." }`;
+            try {
+              const resp = await axios.post(aiProvider === 'gemini' ? `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${credentials.googleApiKey}` : aiProvider === 'ollama' ? `${ollamaUrl}/api/chat` : (aiProvider === 'openai' ? 'https://api.openai.com/v1/chat/completions' : 'https://openrouter.ai/api/v1/chat/completions'),
+                (aiProvider === 'gemini' ? { contents: [{ parts: [{ text: semPrompt }] }] } : { model, messages: [{ role: 'user', content: semPrompt }], stream: false }),
+                { headers: { Authorization: credentials.apiKey ? `Bearer ${credentials.apiKey}` : undefined, 'Content-Type': 'application/json' } });
+
+              let content = aiProvider === 'gemini' ? resp.data.candidates?.[0]?.content?.parts?.[0]?.text : (aiProvider === 'ollama' ? resp.data.message?.content : resp.data.choices?.[0]?.message?.content);
+              const p = parseAiJson(content);
+              if (p.index !== undefined) {
+                const t = candidates[p.index];
+                selector = t.id ? `#${t.id}` : t.name ? `[name="${t.name}"]` : `${t.tagName}:nth-of-type(${p.index + 1})`;
+                if (await page.$(selector)) { validated = true; reasoning = `Semantic match: ${p.reasoning}`; }
+              }
+            } catch {}
+          }
         }
-      }
+      } catch (e) { reasoning = `Execution Error: ${(e as Error).message}`; }
+      finally { if (browser) await browser.close(); }
 
-      if (browser) await browser.close(); // Close after all validation attempts
-
-      results.push({
-        json: {
-          ...session,
-          elementDescription: description,
-          findElementResult: {
-            selector,
-            confidence,
-            reasoning,
-            attempts,
-            alternatives,
-            validated,
-            aiStats,
-          },
-        },
-      });
+      results.push({ json: { ...session, elementDescription: description, findElementResult: { selector, confidence, reasoning, validated, aiStats } } });
     }
-
     return [results];
   }
 }
