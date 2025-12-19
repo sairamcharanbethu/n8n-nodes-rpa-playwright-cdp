@@ -46,6 +46,7 @@ export class FindElementByDescription implements INodeType {
 				name: 'elementType',
 				type: 'options',
 				options: [
+					{ name: 'Auto (Interactive)', value: 'auto' },
 					{ name: 'Input', value: 'input' },
 					{ name: 'Button', value: 'button' },
 					{ name: 'Select / Dropdown', value: 'select' },
@@ -61,8 +62,8 @@ export class FindElementByDescription implements INodeType {
 					{ name: 'Table', value: 'table' },
 					{ name: 'Other', value: '*' },
 				],
-				default: 'input',
-				description: 'Select the type of element to find for semantic validation',
+				default: 'auto',
+				description: 'Select the type of element to find. "Auto" searches across all interactive elements.',
 			},
       {
         displayName: 'AI Provider',
@@ -155,6 +156,16 @@ export class FindElementByDescription implements INodeType {
           hide: { discoveryMode: [true] },
         },
       },
+      {
+        displayName: 'Semantic Validation',
+        name: 'semanticValidation',
+        type: 'boolean',
+        default: true,
+        description: 'Perform a final AI check to ensure the found element matches your description',
+        displayOptions: {
+          hide: { discoveryMode: [true] },
+        },
+      },
     ],
   };
 
@@ -165,27 +176,18 @@ export class FindElementByDescription implements INodeType {
     const parseAiJson = (text: string) => {
       try {
         const cleaned = text.replace(/```(json)?\n?/g, '').replace(/```$/, '').trim();
-        // Remove conversational preambles/postambles by finding first { and last }
         const start = cleaned.indexOf('{');
         const end = cleaned.lastIndexOf('}');
         if (start === -1 || end === -1) throw new Error('No JSON object found in AI response');
         let jsonStr = cleaned.slice(start, end + 1);
-
-        // Strip single line comments
-        jsonStr = jsonStr.replace(/\/\/.*$/gm, '');
-        // Strip multi-line comments
-        jsonStr = jsonStr.replace(/\/\*[\s\S]*?\*\//g, '');
-
+        jsonStr = jsonStr.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
         return JSON.parse(jsonStr);
       } catch (e) {
-        // Final fallback: just try to find the first occurrence of { ... }
         const match = text.match(/\{[\s\S]*\}/);
         if (match) {
           try {
             return JSON.parse(match[0].replace(/\/\/.*$/gm, ''));
-          } catch (e2) {
-            throw e;
-          }
+          } catch (e2) { throw e; }
         }
         throw e;
       }
@@ -200,7 +202,9 @@ export class FindElementByDescription implements INodeType {
 
     const getRelevantHTMLByType = (html: string, elementType: string, maxLength = 35000): string => {
       let relevant = '';
-      switch (elementType.toLowerCase()) {
+      const et = elementType.toLowerCase();
+      switch (et) {
+        case 'auto': relevant = html.match(/<(a|button|input|select|textarea)[^>]*>[\s\S]*?<\/(a|button|input|select|textarea)>|<(a|button|input|select|textarea)[^>]*\/?>/gi)?.join('\n') || ''; break;
         case 'input': relevant = html.match(/<input[^>]*>/gi)?.join('\n') || ''; break;
         case 'button': relevant = html.match(/<button[^>]*>[\s\S]*?<\/button>/gi)?.join('\n') || ''; break;
         case 'select': relevant = html.match(/<select[^>]*>[\s\S]*?<\/select>/gi)?.join('\n') || ''; break;
@@ -232,15 +236,14 @@ export class FindElementByDescription implements INodeType {
       const discoveryMode = this.getNodeParameter('discoveryMode', i, false) as boolean;
       const heuristicSearch = this.getNodeParameter('heuristicSearch', i, true) as boolean;
       const useAI = this.getNodeParameter('useAI', i, true) as boolean;
-      const elementType = this.getNodeParameter('elementType', i) as string;
+      const semanticValidation = this.getNodeParameter('semanticValidation', i, true) as boolean;
+      const elementType = this.getNodeParameter('elementType', i, 'auto') as string;
 
       let model = '';
       let ollamaUrl = '';
-      if (aiProvider === 'openai' || aiProvider === 'openrouter') {
-        model = this.getNodeParameter('openAiModel', i) as string;
-      } else if (aiProvider === 'gemini') {
-        model = this.getNodeParameter('geminiModel', i) as string;
-      } else if (aiProvider === 'ollama') {
+      if (aiProvider === 'openai' || aiProvider === 'openrouter') model = this.getNodeParameter('openAiModel', i) as string;
+      else if (aiProvider === 'gemini') model = this.getNodeParameter('geminiModel', i) as string;
+      else if (aiProvider === 'ollama') {
         model = this.getNodeParameter('ollamaModel', i) as string;
         ollamaUrl = this.getNodeParameter('ollamaUrl', i) as string || credentials.ollamaUrl as string || 'http://localhost:11434';
       }
@@ -258,7 +261,7 @@ export class FindElementByDescription implements INodeType {
         await page.waitForLoadState('domcontentloaded', { timeout: 9000 });
 
         candidates = await page.evaluate((type) => {
-          const sel = type === '*' ? 'body *' : type;
+          const sel = type === 'auto' ? 'a, button, input, select, textarea, [role="button"]' : (type === '*' ? 'body *' : type);
           const elements = Array.from((globalThis as any).document.querySelectorAll(sel));
           return elements.map((el: any, index: number) => ({
             index,
@@ -270,7 +273,11 @@ export class FindElementByDescription implements INodeType {
             placeholder: el.placeholder || '',
             type: el.type || '',
             ariaLabel: el.getAttribute('aria-label') || '',
+            href: el.getAttribute('href') || '',
+            title: el.getAttribute('title') || '',
+            alt: el.getAttribute('alt') || '',
             isVisible: el.offsetWidth > 0 && el.offsetHeight > 0,
+            rect: el.getBoundingClientRect(),
           }));
         }, elementType);
 
@@ -280,41 +287,57 @@ export class FindElementByDescription implements INodeType {
           continue;
         }
 
+        const runSemanticValidation = async (sel: string): Promise<boolean> => {
+          if (!semanticValidation || !page) return true;
+          const el = await page.$(sel).catch(() => null);
+          if (!el) return false;
+          const html = await el.evaluate(e => e.outerHTML.slice(0, 1000));
+          const vPrompt = `Does this element represent a "${description}"? Element HTML: ${html}\nAnswer ONLY with JSON: { "matches": boolean, "reasoning": "..." }`;
+
+          let vBody: any = {};
+          if (aiProvider === 'openai' || aiProvider === 'openrouter') vBody = { model, messages: [{ role: 'user', content: vPrompt }], temperature: 0.1 };
+          else if (aiProvider === 'gemini') vBody = { contents: [{ parts: [{ text: vPrompt }] }] };
+          else if (aiProvider === 'ollama') vBody = { model, messages: [{ role: 'user', content: vPrompt }], stream: false, options: { temperature: 0.1 } };
+
+          try {
+            const vResp = await axios.post(aiProvider === 'gemini' ? `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${credentials.googleApiKey}` : (aiProvider === 'ollama' ? `${ollamaUrl}/api/chat` : (aiProvider === 'openai' ? 'https://api.openai.com/v1/chat/completions' : 'https://openrouter.ai/api/v1/chat/completions')), vBody, { headers: { Authorization: credentials.apiKey ? `Bearer ${credentials.apiKey}` : undefined, 'Content-Type': 'application/json' } });
+            aiStats.apiCalls++;
+            let vContent = aiProvider === 'gemini' ? vResp.data.candidates?.[0]?.content?.parts?.[0]?.text : (aiProvider === 'ollama' ? vResp.data.message?.content : vResp.data.choices?.[0]?.message?.content);
+            const vp = parseAiJson(vContent);
+            return !!vp.matches;
+          } catch { return true; }
+        };
+
+        const constructRobustSelector = (t: any) => {
+          if (t.id) return `#${t.id}`;
+          if (t.name) return `[name="${t.name}"]`;
+          if (t.href && t.href.length > 5) {
+             const pathParts = t.href.split(/[?#]/)[0].split('/');
+             const last = pathParts.pop() || pathParts.pop();
+             if (last && last.length > 3) return `${t.tagName}[href*="${last}"]`;
+             return `${t.tagName}[href="${t.href}"]`;
+          }
+          if (t.ariaLabel) return `[aria-label="${t.ariaLabel}"]`;
+          if (t.placeholder) return `[placeholder="${t.placeholder}"]`;
+          if (t.title) return `[title="${t.title}"]`;
+          if (t.alt) return `[alt="${t.alt}"]`;
+          if (t.text && t.text.length > 2 && t.text.length < 50) return `${t.tagName}:has-text("${t.text}")`;
+          return `${t.tagName}:nth-of-type(${parseInt(t.index) + 1})`;
+        };
+
         // 1. Heuristic Search
         if (heuristicSearch) {
           const descLower = description.toLowerCase();
-          // Intent-based fuzzy mapping
           const keywords = descLower.split(/\s+/).filter(w => w.length > 2);
-
           for (const cand of candidates) {
-            const id = String(cand.id).toLowerCase();
-            const name = String(cand.name).toLowerCase();
-            const ph = String(cand.placeholder).toLowerCase();
-            const text = String(cand.text).toLowerCase();
-            const aria = String(cand.ariaLabel).toLowerCase();
-
-            const isExact = [id, name, ph, text, aria].some(v => v === descLower);
-            const isFuzzy = keywords.length > 0 && keywords.every(kw =>
-              id.includes(kw) || name.includes(kw) || ph.includes(kw) || text.includes(kw) || aria.includes(kw)
-            );
-
+            const atts = [cand.id, cand.name, cand.placeholder, cand.text, cand.ariaLabel, cand.href, cand.title, cand.alt].map(v => String(v || '').toLowerCase());
+            const isExact = atts.some(v => v === descLower);
+            const isFuzzy = keywords.length > 0 && keywords.every(kw => atts.some(a => a.includes(kw)));
             if (isExact || isFuzzy) {
-              const possible = [
-                cand.id ? `#${cand.id}` : null,
-                cand.name ? `[name="${cand.name}"]` : null,
-                cand.placeholder ? `[placeholder="${cand.placeholder}"]` : null,
-                cand.text ? `${cand.tagName}:has-text("${cand.text}")` : null
-              ].filter(Boolean) as string[];
-
-              for (const sel of possible) {
-                const count = await page.evaluate((s) => (globalThis as any).document.querySelectorAll(s).length, sel);
-                if (count === 1) {
-                  selector = sel;
-                  validated = true;
-                  confidence = isExact ? 0.98 : 0.85;
-                  reasoning = `Heuristic match (${isExact ? 'exact' : 'fuzzy'}): Unique element found via ${sel}.`;
-                  break;
-                }
+              const sel = constructRobustSelector(cand);
+              const count = await page.evaluate((s) => (globalThis as any).document.querySelectorAll(s).length, sel);
+              if (count === 1) {
+                if (await runSemanticValidation(sel)) { selector = sel; validated = true; confidence = isExact ? 0.98 : 0.85; reasoning = `Heuristic match (${isExact ? 'exact' : 'fuzzy'}): Unique element found via ${sel}.`; break; }
               }
             }
             if (validated) break;
@@ -327,61 +350,26 @@ export class FindElementByDescription implements INodeType {
           let bodyHTML = rawHTML.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '').replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '').replace(/<!--[\s\S]*?-->/g, '');
           bodyHTML = bodyHTML.match(/<body[^>]*>([\s\S]*)<\/body>/i)?.[1] || bodyHTML;
           bodyHTML = getRelevantHTMLByType(bodyHTML, elementType, 35000);
-
-          const chunks = [bodyHTML]; // Simplification for now, usually one chunk is enough for type-filtered HTML
+          const chunks = [bodyHTML];
           for (const chunk of chunks) {
             let attempt = 0;
             while (attempt < maxAttempts && !validated) {
               attempt++;
-              const prompt = `
-Task: Find the best CSS selector for the element described below.
-Description: "${description}"
-Required Element Type: "${elementType}"
-Current Page URL: ${await page.url()}
-
-Constraints:
-1. Return ONLY a valid JSON object. No preamble, no explanation.
-2. Use double quotes for all keys and string values.
-3. DO NOT include any comments (// or /*) in the JSON.
-4. Preferred selector priority: ID > Name > Placeholder > Data Attributes > Unique text > Hierarchy.
-
-Output Format Example:
-{
-  "selector": "#login-button",
-  "confidence": 0.95,
-  "reasoning": "Found unique button with ID 'login-button'",
-  "alternatives": ["[type='submit']"]
-}
-
-HTML Snippet:
-${getRelevantHTML(chunk, 15000)}
-`.trim();
-
+              const prompt = `Task: Find a ROBUST CSS selector for: "${description}". URL: ${await page.url()}\nAvoid using :nth-of-type() or :nth-child() if ANY other attribute (ID, Name, Href, Data-*, etc) can uniquely identify the element.\nReturn ONLY JSON: { "selector": "...", "confidence": 0.9, "reasoning": "...", "alternatives": [] }\nHTML: ${getRelevantHTML(chunk, 15000)}`;
               let body: any = {};
               if (aiProvider === 'openai' || aiProvider === 'openrouter') body = { model, messages: [{ role: 'user', content: prompt }], temperature: 0.1 };
               else if (aiProvider === 'gemini') body = { contents: [{ parts: [{ text: prompt }] }] };
               else if (aiProvider === 'ollama') body = { model, messages: [{ role: 'user', content: prompt }], stream: false, options: { temperature: 0.1 } };
-
               try {
                 const start = Date.now();
-                const resp = await axios.post(aiProvider === 'gemini' ? `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${credentials.googleApiKey}` : aiProvider === 'ollama' ? `${ollamaUrl}/api/chat` : (aiProvider === 'openai' ? 'https://api.openai.com/v1/chat/completions' : 'https://openrouter.ai/api/v1/chat/completions'), body, { headers: { Authorization: credentials.apiKey ? `Bearer ${credentials.apiKey}` : undefined, 'Content-Type': 'application/json' } });
+                const resp = await axios.post(aiProvider === 'gemini' ? `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${credentials.googleApiKey}` : (aiProvider === 'ollama' ? `${ollamaUrl}/api/chat` : (aiProvider === 'openai' ? 'https://api.openai.com/v1/chat/completions' : 'https://openrouter.ai/api/v1/chat/completions')), body, { headers: { Authorization: credentials.apiKey ? `Bearer ${credentials.apiKey}` : undefined, 'Content-Type': 'application/json' } });
                 aiStats.totalDurationMs += Date.now() - start; aiStats.apiCalls++;
-
-                let content = '';
-                if (aiProvider === 'gemini') content = resp.data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-                else if (aiProvider === 'ollama') content = resp.data.message?.content || '';
-                else content = resp.data.choices?.[0]?.message?.content || '';
-
+                let content = aiProvider === 'gemini' ? resp.data.candidates?.[0]?.content?.parts?.[0]?.text : (aiProvider === 'ollama' ? resp.data.message?.content : resp.data.choices?.[0]?.message?.content);
                 const parsed = parseAiJson(content);
                 selector = parsed.selector; confidence = parsed.confidence; reasoning = parsed.reasoning; alternatives = parsed.alternatives || [];
-
                 for (const sel of [selector, ...alternatives]) {
                   if (!sel) continue;
-                  const el = await page.$(sel);
-                  if (el) {
-                    const tag = (await el.evaluate(e => e.tagName.toLowerCase())) || '';
-                    if (elementType === '*' || tag.includes(elementType.split(',')[0])) { selector = sel; validated = true; break; }
-                  }
+                  if (await runSemanticValidation(sel)) { selector = sel; validated = true; break; }
                 }
               } catch (e) { reasoning = `AI Error: ${(e as Error).message}`; }
             }
@@ -390,25 +378,21 @@ ${getRelevantHTML(chunk, 15000)}
 
           // 3. Semantic Fallback
           if (!validated && candidates.length > 0) {
-            const semPrompt = `Which element matches "${description}"? Candidates: ${JSON.stringify(candidates.slice(0, 50))}\nReturn JSON: { "index": number, "reasoning": "..." }`;
+            const semPrompt = `Which element matches "${description}"? Candidates: ${JSON.stringify(candidates.slice(0, 50).map(c => ({...c, rect: undefined})))}\nReturn JSON: { "index": number, "reasoning": "..." }`;
             try {
-              const resp = await axios.post(aiProvider === 'gemini' ? `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${credentials.googleApiKey}` : aiProvider === 'ollama' ? `${ollamaUrl}/api/chat` : (aiProvider === 'openai' ? 'https://api.openai.com/v1/chat/completions' : 'https://openrouter.ai/api/v1/chat/completions'),
-                (aiProvider === 'gemini' ? { contents: [{ parts: [{ text: semPrompt }] }] } : { model, messages: [{ role: 'user', content: semPrompt }], stream: false }),
-                { headers: { Authorization: credentials.apiKey ? `Bearer ${credentials.apiKey}` : undefined, 'Content-Type': 'application/json' } });
-
+              const resp = await axios.post(aiProvider === 'gemini' ? `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${credentials.googleApiKey}` : (aiProvider === 'ollama' ? `${ollamaUrl}/api/chat` : (aiProvider === 'openai' ? 'https://api.openai.com/v1/chat/completions' : 'https://openrouter.ai/api/v1/chat/completions')), (aiProvider === 'gemini' ? { contents: [{ parts: [{ text: semPrompt }] }] } : { model, messages: [{ role: 'user', content: semPrompt }], stream: false }), { headers: { Authorization: credentials.apiKey ? `Bearer ${credentials.apiKey}` : undefined, 'Content-Type': 'application/json' } });
               let content = aiProvider === 'gemini' ? resp.data.candidates?.[0]?.content?.parts?.[0]?.text : (aiProvider === 'ollama' ? resp.data.message?.content : resp.data.choices?.[0]?.message?.content);
               const p = parseAiJson(content);
               if (p.index !== undefined) {
                 const t = candidates[p.index];
-                selector = t.id ? `#${t.id}` : t.name ? `[name="${t.name}"]` : `${t.tagName}:nth-of-type(${p.index + 1})`;
-                if (await page.$(selector)) { validated = true; reasoning = `Semantic match: ${p.reasoning}`; }
+                const sel = constructRobustSelector(t);
+                if (await page.$(sel)) { selector = sel; validated = true; reasoning = `Semantic match: ${p.reasoning}`; }
               }
             } catch {}
           }
         }
       } catch (e) { reasoning = `Execution Error: ${(e as Error).message}`; }
       finally { if (browser) await browser.close(); }
-
       results.push({ json: { ...session, elementDescription: description, findElementResult: { selector, confidence, reasoning, validated, aiStats } } });
     }
     return [results];

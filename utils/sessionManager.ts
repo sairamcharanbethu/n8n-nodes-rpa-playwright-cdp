@@ -1,8 +1,6 @@
 import playwright, { Browser } from 'playwright';
 import http, { RequestOptions, IncomingMessage } from 'http';
 import { URL } from 'url';
-import * as fs from 'fs';
-import * as path from 'path';
 import { SessionObject } from './SessionObject';
 
 export interface LaunchBrowserParams {
@@ -11,8 +9,6 @@ export interface LaunchBrowserParams {
   navigateUrl: string;
   browserArgs?: string[];
   windowSize?: string; // e.g. "1920,1080"
-  recordVideo?: boolean;
-  videoResolution?: string; // e.g. "1280,720"
 }
 
 function parseUrl(url: string): URL {
@@ -92,22 +88,7 @@ export async function launchGoogleSession(params: LaunchBrowserParams): Promise<
     const cdpUrl = capabilities['se:cdp'] as string;
 
     browser = await playwright.chromium.connectOverCDP(cdpUrl);
-
-    let context;
-    if (params.recordVideo) {
-      const [width, height] = (params.videoResolution || '1280,720').split(',').map(s => parseInt(s.trim()));
-      const videoDir = '/tmp/n8n-videos';
-      if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir, { recursive: true });
-      context = await browser.newContext({
-        recordVideo: {
-          dir: videoDir,
-          size: { width: width || 1280, height: height || 720 }
-        }
-      });
-    } else {
-      context = browser.contexts()[0] || (await browser.newContext());
-    }
-
+    const context = browser.contexts()[0] || (await browser.newContext());
     const page = context.pages().length > 0 ? context.pages()[0] : await context.newPage();
 
     await page.goto(params.navigateUrl, {
@@ -117,15 +98,6 @@ export async function launchGoogleSession(params: LaunchBrowserParams): Promise<
 
     const title = await page.title();
     const currentUrl = page.url();
-    let videoPath = '';
-
-    if (params.recordVideo) {
-      const video = page.video();
-      if (video) {
-        videoPath = await video.path();
-      }
-      await context.close();
-    }
 
     await browser.close();
 
@@ -137,9 +109,8 @@ export async function launchGoogleSession(params: LaunchBrowserParams): Promise<
       pageTitle: title,
       currentUrl,
       step: 'launch',
-      message: 'Website session launched successfully' + (videoPath ? ' (recorded)' : ''),
+      message: 'Website session launched successfully',
       timestamp: new Date().toISOString(),
-      videoRecording: videoPath,
     };
   } catch (error: any) {
     if (browser) await browser.close().catch(() => {});
@@ -193,67 +164,6 @@ export async function navigateWithSession(
       step: 'navigate',
       timestamp: new Date().toISOString(),
     };
-  }
-}
-
-export async function executeWithRecording<T>(
-  session: SessionObject,
-  params: { recordVideo?: boolean; videoResolution?: string },
-  fn: (page: playwright.Page) => Promise<T>
-): Promise<{ result: T; videoRecording?: string }> {
-  let browser: playwright.Browser | null = null;
-  let videoPath: string | null = null;
-  try {
-    browser = await playwright.chromium.connectOverCDP(session.cdpUrl);
-    const defaultContext = browser.contexts()[0] || (await browser.newContext());
-    const primaryPage = defaultContext.pages()[0] || (await defaultContext.newPage());
-    const currentUrl = primaryPage.url();
-
-    let context: playwright.BrowserContext;
-    let page: playwright.Page;
-
-    if (params.recordVideo) {
-      const [width, height] = (params.videoResolution || '1280,720').split(',').map(s => parseInt(s.trim()));
-      const videoDir = '/tmp/n8n-videos';
-      if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir, { recursive: true });
-
-      context = await browser.newContext({
-        recordVideo: {
-          dir: videoDir,
-          size: { width: width || 1280, height: height || 720 }
-        }
-      });
-
-      // Transfer cookies for auth
-      const cookies = await defaultContext.cookies();
-      await context.addCookies(cookies);
-
-      page = await context.newPage();
-
-      // Navigate to SAME url as primary page if not about:blank
-      if (currentUrl && currentUrl !== 'about:blank') {
-        await page.goto(currentUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      }
-    } else {
-      context = defaultContext;
-      page = primaryPage;
-    }
-
-    const result = await fn(page);
-
-    if (params.recordVideo) {
-      const video = page.video();
-      if (video) {
-        videoPath = await video.path();
-      }
-      await context.close();
-    }
-
-    await browser.close();
-    return { result, videoRecording: videoPath || undefined };
-  } catch (error: any) {
-    if (browser) await browser.close().catch(() => {});
-    throw error;
   }
 }
 

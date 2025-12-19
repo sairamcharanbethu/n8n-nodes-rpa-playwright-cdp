@@ -1,7 +1,6 @@
 import { INodeType, INodeTypeDescription, IExecuteFunctions, INodeExecutionData, NodeConnectionType } from 'n8n-workflow';
 import { launchGoogleSession } from '../../utils/sessionManager';
 import { SessionObject } from '../../utils/SessionObject';
-import * as fs from 'fs';
 
 export class LaunchBrowser implements INodeType {
   description: INodeTypeDescription = {
@@ -51,25 +50,6 @@ export class LaunchBrowser implements INodeType {
         default: '1920,1080',
         description: 'Resolution for the Chrome window, e.g. 1920,1080'
       },
-      {
-        displayName: 'Record Video',
-        name: 'recordVideo',
-        type: 'boolean',
-        default: false,
-        description: 'Whether to record the browser session (navigation)',
-      },
-      {
-        displayName: 'Video Resolution',
-        name: 'videoResolution',
-        type: 'string',
-        default: '1280,720',
-        description: 'Resolution for the recorded video, e.g. 1280,720',
-        displayOptions: {
-          show: {
-            recordVideo: [true],
-          },
-        },
-      },
     ],
   };
 
@@ -79,8 +59,6 @@ export class LaunchBrowser implements INodeType {
     const navigateUrl = this.getNodeParameter('navigateUrl', 0) as string;
     const browserArgsRaw = this.getNodeParameter('browserArgs', 0) as string;
     const windowSize = this.getNodeParameter('windowSize', 0) as string;
-    const recordVideo = this.getNodeParameter('recordVideo', 0, false) as boolean;
-    const videoResolution = this.getNodeParameter('videoResolution', 0, '1280,720') as string;
 
     const browserArgs =
       browserArgsRaw
@@ -94,26 +72,9 @@ export class LaunchBrowser implements INodeType {
       navigateUrl,
       browserArgs,
       windowSize,
-      recordVideo,
-      videoResolution,
     });
 
     const output: INodeExecutionData = { json: { ...session } };
-
-    if (session.videoRecording && fs.existsSync(session.videoRecording)) {
-      const videoBuffer = fs.readFileSync(session.videoRecording);
-      output.binary = {
-        video: {
-          data: videoBuffer.toString('base64'),
-          mimeType: 'video/webm',
-          fileName: 'launch_recording.webm',
-        }
-      };
-      // Clean up
-      try { fs.unlinkSync(session.videoRecording); } catch (err) {}
-      // Remove path from JSON for privacy/cleanliness
-      delete session.videoRecording;
-    }
 
     return [[output]];
   }

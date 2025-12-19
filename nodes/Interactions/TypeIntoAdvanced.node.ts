@@ -5,10 +5,8 @@ import {
   INodeExecutionData,
   NodeConnectionType,
 } from 'n8n-workflow';
-import { chromium } from 'playwright';
+import { chromium, Browser } from 'playwright';
 import { SessionObject } from '../../utils/SessionObject';
-import { executeWithRecording } from '../../utils/sessionManager';
-import * as fs from 'fs';
 
 // Type declarations for DOM elements
 declare global {
@@ -193,25 +191,6 @@ export class TypeIntoAdvanced implements INodeType {
         },
         description: 'Throw an error if validation fails (otherwise just mark as validation failed)',
       },
-      {
-        displayName: 'Record Video',
-        name: 'recordVideo',
-        type: 'boolean',
-        default: false,
-        description: 'Whether to record a video of this specific action',
-      },
-      {
-        displayName: 'Video Resolution',
-        name: 'videoResolution',
-        type: 'string',
-        default: '1280,720',
-        description: 'Resolution for the recorded video, e.g. 1280,720',
-        displayOptions: {
-          show: {
-            recordVideo: [true],
-          },
-        },
-      }
     ]
   };
 
@@ -237,13 +216,14 @@ export class TypeIntoAdvanced implements INodeType {
       const validateInput = this.getNodeParameter('validateInput', i, true) as boolean;
       const validationMethod = this.getNodeParameter('validationMethod', i, 'exact') as string;
       const failOnValidationError = this.getNodeParameter('failOnValidationError', i, true) as boolean;
-      const recordVideo = this.getNodeParameter('recordVideo', i, false) as boolean;
-      const videoResolution = this.getNodeParameter('videoResolution', i, '1280,720') as string;
 
       let typingResult: any = {};
+      let browser: Browser | null = null;
 
       try {
-        const { videoRecording } = await executeWithRecording(session, { recordVideo, videoResolution }, async (page) => {
+        browser = await chromium.connectOverCDP(cdpUrl);
+        const context = browser.contexts()[0] || (await browser.newContext());
+        const page = context.pages().length ? context.pages()[0] : await context.newPage();
 
         typingResult.currentUrl = await page.url();
         typingResult.selector = selector;
@@ -456,24 +436,11 @@ export class TypeIntoAdvanced implements INodeType {
 
         typingResult.textTyped = text;
 
-        });
-
-        const output: INodeExecutionData = { json: { ...session, typeAction: typingResult } };
-
-        if (videoRecording && fs.existsSync(videoRecording)) {
-          const videoBuffer = fs.readFileSync(videoRecording);
-          output.binary = {
-            video: {
-              data: videoBuffer.toString('base64'),
-              mimeType: 'video/webm',
-              fileName: 'type_advanced_recording.webm',
-            }
-          };
-          try { fs.unlinkSync(videoRecording); } catch (err) {}
-        }
-        results.push(output);
+        await browser.close();
+        results.push({ json: { ...session, typeAction: typingResult } });
 
       } catch (e) {
+        if (browser) await browser.close().catch(() => {});
         const errorMsg = (e as Error).message;
         typingResult.result = 'error';
         typingResult.error = errorMsg;
