@@ -330,14 +330,18 @@ export class FindElementByDescription implements INodeType {
         // 1. Heuristic Search (Prioritized unique matches)
         if (heuristicSearch) {
           const descLower = description.toLowerCase();
-          const keywords = descLower.split(/\s+/).filter(w => w.length > 2);
+          const genericTerms = ['field', 'input', 'button', 'link', 'dropdown', 'select', 'box', 'area', 'label', 'user', 'the'];
+          const keywords = descLower.split(/\s+/).filter(w => w.length > 2 && !genericTerms.includes(w));
+          const squashedDesc = descLower.replace(/[\s\-_]/g, '');
 
           let exactMatches: any[] = [];
           let fuzzyMatches: any[] = [];
 
           for (const cand of candidates) {
             const atts = [cand.id, cand.name, cand.placeholder, cand.text, cand.ariaLabel, cand.href, cand.title, cand.alt].map(v => String(v || '').toLowerCase());
-            if (atts.some(v => v === descLower)) {
+            const squashedAtts = atts.map(a => a.replace(/[\s\-_]/g, ''));
+
+            if (atts.some(v => v === descLower) || (squashedDesc.length > 3 && squashedAtts.some(v => v.includes(squashedDesc)))) {
                exactMatches.push(cand);
             } else if (keywords.length > 0 && keywords.every(kw => atts.some(a => a.includes(kw)))) {
                fuzzyMatches.push(cand);
@@ -349,17 +353,15 @@ export class FindElementByDescription implements INodeType {
              const sel = constructRobustSelector(exactMatches[0]);
              const count = await page.evaluate((s) => (globalThis as any).document.querySelectorAll(s).length, sel);
              if (count === 1) {
-               selector = sel; validated = true; confidence = 0.99; reasoning = `Heuristic Fast Path: Unique exact match found for "${description}".`;
+               selector = sel; validated = true; confidence = 0.99; reasoning = `Heuristic Fast Path: Unique exact match for "${description}".`;
              }
           }
 
-          // If multiple exact/fuzzy matches, pick the first one and validate ONLY once
           if (!validated && (exactMatches.length > 0 || fuzzyMatches.length > 0)) {
             const topCand = exactMatches.length > 0 ? exactMatches[0] : fuzzyMatches[0];
             const sel = constructRobustSelector(topCand);
             const count = await page.evaluate((s) => (globalThis as any).document.querySelectorAll(s).length, sel);
             if (count === 1) {
-               // Only validate ONCE for the top candidate
                if (await runSemanticValidation(sel)) {
                   selector = sel; validated = true; confidence = 0.95; reasoning = `Heuristic validated match: Unique element for "${description}".`;
                }
@@ -369,7 +371,7 @@ export class FindElementByDescription implements INodeType {
 
         // 2. AI Search (Only if Heuristic failed)
         if (!validated && useAI) {
-          const rawHTML = await page.evaluate(() => (globalThis as any).document.body.innerHTML); // Faster than page.content()
+          const rawHTML = await page.evaluate(() => (globalThis as any).document.body.innerHTML);
           let bodyHTML = rawHTML.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '').replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '').replace(/<!--[\s\S]*?-->/g, '');
           bodyHTML = getRelevantHTMLByType(bodyHTML, elementType, 35000);
 
@@ -398,7 +400,6 @@ export class FindElementByDescription implements INodeType {
             } catch (e) { reasoning = `AI Error: ${(e as Error).message}`; }
           }
 
-          // 3. Semantic Fallback (Lowest priority)
           if (!validated && candidates.length > 0) {
             const semPrompt = `Which element matches "${description}"? Candidates: ${JSON.stringify(candidates.slice(0, 50).map(c => ({...c, rect: undefined})))}\nReturn JSON: { "index": number, "reasoning": "..." }`;
             try {
