@@ -72,6 +72,7 @@ export class FindElementByDescription implements INodeType {
           { name: 'OpenAI', value: 'openai' },
           { name: 'OpenRouter', value: 'openrouter' },
           { name: 'Gemini', value: 'gemini' },
+          { name: 'Ollama', value: 'ollama' },
         ],
         default: 'openai',
         required: true,
@@ -96,6 +97,28 @@ export class FindElementByDescription implements INodeType {
         required: true,
         displayOptions: {
           show: { aiProvider: ['gemini'] },
+        },
+      },
+      {
+        displayName: 'Ollama Model',
+        name: 'ollamaModel',
+        type: 'string',
+        default: 'llama3',
+        placeholder: 'e.g. llama3, mistral',
+        required: true,
+        displayOptions: {
+          show: { aiProvider: ['ollama'] },
+        },
+      },
+      {
+        displayName: 'Ollama URL',
+        name: 'ollamaUrl',
+        type: 'string',
+        default: 'http://localhost:11434',
+        placeholder: 'E.g. http://localhost:11434',
+        required: true,
+        displayOptions: {
+          show: { aiProvider: ['ollama'] },
         },
       },
       {
@@ -142,10 +165,14 @@ export class FindElementByDescription implements INodeType {
       const maxAttempts = this.getNodeParameter('maxAttempts', i, 3) as number;
 
       let model = '';
+      let ollamaUrl = '';
       if (aiProvider === 'openai' || aiProvider === 'openrouter') {
         model = this.getNodeParameter('openAiModel', i) as string;
       } else if (aiProvider === 'gemini') {
         model = this.getNodeParameter('geminiModel', i) as string;
+      } else if (aiProvider === 'ollama') {
+        model = this.getNodeParameter('ollamaModel', i) as string;
+        ollamaUrl = this.getNodeParameter('ollamaUrl', i) as string || credentials.ollamaUrl as string || 'http://localhost:11434';
       }
 
       if (!cdpUrl) throw new Error('Session object missing cdpUrl.');
@@ -178,6 +205,14 @@ export class FindElementByDescription implements INodeType {
         reasoning = '',
         alternatives: string[] = [],
         validated = false;
+
+      const aiStats = {
+        totalTokens: 0,
+        promptTokens: 0,
+        completionTokens: 0,
+        totalDurationMs: 0,
+        apiCalls: 0,
+      };
 function getRelevantHTMLByType(html: string, elementType: string, maxLength = 35000): string {
   let relevant = '';
 
@@ -297,18 +332,48 @@ Here is the relevant JSON format example:
             apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${credentials.googleApiKey}`;
             headers = { 'Content-Type': 'application/json' };
             body = { contents: [{ parts: [{ text: prompt }] }] };
+          } else if (aiProvider === 'ollama') {
+            apiUrl = `${ollamaUrl}/api/chat`;
+            headers = { 'Content-Type': 'application/json' };
+            body = {
+              model,
+              messages: [{ role: 'user', content: prompt }],
+              stream: false,
+              options: { temperature: 0.1 },
+            };
           }
 
           try {
+            const startTime = Date.now();
             const aiResponse = await axios.post(apiUrl, body, { headers });
+            aiStats.totalDurationMs += Date.now() - startTime;
+            aiStats.apiCalls++;
+
             let parsed: any = {};
 
             if (aiProvider === 'gemini') {
               const geminiContent = aiResponse.data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
               parsed = typeof geminiContent === 'string' ? parseAiJson(geminiContent) : geminiContent;
+              // Gemini token stats (if available in response)
+              if (aiResponse.data.usageMetadata) {
+                aiStats.promptTokens += aiResponse.data.usageMetadata.promptTokenCount || 0;
+                aiStats.completionTokens += aiResponse.data.usageMetadata.candidatesTokenCount || 0;
+                aiStats.totalTokens += aiResponse.data.usageMetadata.totalTokenCount || 0;
+              }
+            } else if (aiProvider === 'ollama') {
+              const content = aiResponse.data.message?.content ?? '';
+              parsed = typeof content === 'string' ? parseAiJson(content) : content;
+              aiStats.promptTokens += aiResponse.data.prompt_eval_count || 0;
+              aiStats.completionTokens += aiResponse.data.eval_count || 0;
+              aiStats.totalTokens += (aiResponse.data.prompt_eval_count || 0) + (aiResponse.data.eval_count || 0);
             } else {
               const content = aiResponse.data.choices?.[0]?.message?.content ?? aiResponse.data.choices?.[0]?.text ?? '';
               parsed = typeof content === 'string' ? parseAiJson(content) : content;
+              if (aiResponse.data.usage) {
+                aiStats.promptTokens += aiResponse.data.usage.prompt_tokens || 0;
+                aiStats.completionTokens += aiResponse.data.usage.completion_tokens || 0;
+                aiStats.totalTokens += aiResponse.data.usage.total_tokens || 0;
+              }
             }
 
             selector = parsed.selector || '';
@@ -379,6 +444,97 @@ Here is the relevant JSON format example:
         if (validated) break;
       }
 
+      // ------------------------
+      // "Last Resort" Semantic Fallback (Crawl4AI Inspired)
+      // ------------------------
+      if (!validated && page) {
+        reasoning += " | Standard selector matching failed. Attempting semantic fallback...";
+        try {
+          const elementType = this.getNodeParameter('elementType', i) as string;
+          // Extract elements and their text/attributes
+          const elementsData = await page.evaluate((type) => {
+            const sel = type === '*' ? 'body *' : type;
+            const elements = Array.from((globalThis as any).document.querySelectorAll(sel));
+            return elements.slice(0, 100).map((el: any, index: number) => ({
+              index,
+              text: el.textContent?.trim().slice(0, 50) || '',
+              id: el.id,
+              name: el.name || '',
+              class: el.className,
+              placeholder: el.placeholder || '',
+            }));
+          }, elementType);
+
+          if (elementsData.length > 0) {
+            const semanticPrompt = `
+You are an RPA agent. I am looking for an element described as: "${description}"
+Here is a list of candidate elements of type "${elementType}" found on the page:
+${JSON.stringify(elementsData, null, 2)}
+
+Identify the index of the most likely element.
+Return strictly JSON: { "index": number, "reasoning": "string" }
+`.trim();
+
+            let semanticResponse;
+            const semanticStartTime = Date.now();
+
+            // Generate semantic API URL and headers based on provider
+            let sApiUrl = '';
+            let sHeaders: any = {};
+            let sBody: any = {};
+
+            if (aiProvider === 'openai') {
+              sApiUrl = 'https://api.openai.com/v1/chat/completions';
+              sHeaders = { Authorization: `Bearer ${credentials.apiKey}` };
+              sBody = { model, messages: [{ role: 'user', content: semanticPrompt }], temperature: 0.1 };
+            } else if (aiProvider === 'openrouter') {
+              sApiUrl = 'https://openrouter.ai/api/v1/chat/completions';
+              sHeaders = { Authorization: `Bearer ${credentials.apiKey}` };
+              sBody = { model, messages: [{ role: 'user', content: semanticPrompt }], temperature: 0.1 };
+            } else if (aiProvider === 'gemini') {
+              sApiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${credentials.googleApiKey}`;
+              sHeaders = { 'Content-Type': 'application/json' };
+              sBody = { contents: [{ parts: [{ text: semanticPrompt }] }] };
+            } else if (aiProvider === 'ollama') {
+              sApiUrl = `${ollamaUrl}/api/chat`;
+              sHeaders = { 'Content-Type': 'application/json' };
+              sBody = { model, messages: [{ role: 'user', content: semanticPrompt }], stream: false };
+            }
+
+            semanticResponse = await axios.post(sApiUrl, sBody, { headers: sHeaders });
+
+            aiStats.totalDurationMs += Date.now() - semanticStartTime;
+            aiStats.apiCalls++;
+
+            let semanticParsed: any = {};
+            if (aiProvider === 'gemini') {
+              const content = semanticResponse?.data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+              semanticParsed = parseAiJson(content);
+            } else if (aiProvider === 'ollama') {
+              semanticParsed = parseAiJson(semanticResponse?.data.message?.content || '');
+            } else {
+              semanticParsed = parseAiJson(semanticResponse?.data.choices?.[0]?.message?.content || '');
+            }
+
+            if (semanticParsed.index !== undefined && semanticParsed.index >= 0) {
+              const targetIndex = semanticParsed.index;
+              // Generate robust selector based on index for the specific element type
+              selector = `${elementType}:nth-of-type(${targetIndex + 1})`;
+              if (elementType === '*') selector = `*:nth-child(${targetIndex + 1})`;
+
+              // Verify it exists
+              const check = await page.$(selector);
+              if (check) {
+                validated = true;
+                reasoning = `Semantic match: ${semanticParsed.reasoning}`;
+              }
+            }
+          }
+        } catch (e: any) {
+          reasoning += ` | Semantic fallback failed: ${e.message}`;
+        }
+      }
+
       if (browser) await browser.close(); // Close after all validation attempts
 
       results.push({
@@ -392,6 +548,7 @@ Here is the relevant JSON format example:
             attempts,
             alternatives,
             validated,
+            aiStats,
           },
         },
       });

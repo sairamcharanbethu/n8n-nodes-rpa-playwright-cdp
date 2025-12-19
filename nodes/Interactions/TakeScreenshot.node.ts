@@ -24,11 +24,13 @@ export class TakeScreenshot implements INodeType {
         required: true,
       },
       {
-        displayName: 'CSS Selector (optional, leave blank for full page)',
+        displayName: 'Selector',
         name: 'selector',
         type: 'string',
         default: '',
         required: false,
+        placeholder: 'e.g. #main, text=Section 1, xpath=//div[@id="content"]',
+        description: 'Selector (CSS, XPath, Text, etc.) to screenshot. Leave blank for full page.',
       },
       {
         displayName: 'Image Format',

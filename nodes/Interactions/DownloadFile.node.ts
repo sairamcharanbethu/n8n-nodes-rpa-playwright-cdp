@@ -24,12 +24,13 @@ export class DownloadFile implements INodeType {
     outputs: [NodeConnectionType.Main],
     properties: [
       {
-        displayName: 'Trigger Selector',
+        displayName: 'Selector',
         name: 'selector',
         type: 'string',
         required: true,
         default: '',
-        placeholder: 'e.g. a.download-link, button.export',
+        placeholder: 'e.g. a.download-link, text=Download, xpath=//button',
+        description: 'Selector (CSS, XPath, Text, etc.) that triggers the download when clicked',
       },
       {
         displayName: 'Wait For Selector Timeout (ms)',

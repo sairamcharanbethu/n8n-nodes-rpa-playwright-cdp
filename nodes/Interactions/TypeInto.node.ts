@@ -28,7 +28,7 @@ export class TypeInto implements INodeType {
     name: 'typeInto',
     group: ['transform'],
     version: 1,
-    description: 'Types provided text into an element found by a manual CSS selector.',
+    description: 'Types provided text into an element found by a selector (CSS, XPath, Text, etc.).',
     defaults: { name: 'Type Into' },
     inputs: [NodeConnectionType.Main],
     outputs: [NodeConnectionType.Main],
@@ -42,12 +42,12 @@ export class TypeInto implements INodeType {
         required: true,
       },
       {
-        displayName: 'CSS Selector',
+        displayName: 'Selector',
         name: 'selector',
         type: 'string',
         default: '',
         required: true,
-        description: 'CSS selector to find the target element',
+        description: 'Selector (CSS, XPath, Text, etc.) to find the target element',
       },
       {
         displayName: 'Text to Type',

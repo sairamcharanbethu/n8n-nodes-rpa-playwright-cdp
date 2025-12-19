@@ -35,13 +35,13 @@ export class GetTable implements INodeType {
         required: true,
       },
       {
-        displayName: 'Table Selector',
+        displayName: 'Selector',
         name: 'selector',
         type: 'string',
         default: '',
         required: true,
-        placeholder: 'e.g. table.data-table, #price-table',
-        description: 'CSS selector to find the table element',
+        placeholder: 'e.g. table.data-table, text=Price Table, xpath=//table',
+        description: 'Selector (CSS, XPath, Text, etc.) to find the table element',
       },
       {
         displayName: 'Has Header Row?',

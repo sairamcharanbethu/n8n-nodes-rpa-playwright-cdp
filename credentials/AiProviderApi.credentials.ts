@@ -13,6 +13,7 @@ export class AiProviderApi implements ICredentialType {
 				{ name: 'OpenAI', value: 'openai' },
 				{ name: 'OpenRouter', value: 'openrouter' },
 				{ name: 'Google Gemini', value: 'gemini' },
+				{ name: 'Ollama', value: 'ollama' },
 			],
 			default: 'openai',
 		},
@@ -37,6 +38,18 @@ export class AiProviderApi implements ICredentialType {
 			displayOptions: {
 				show: {
 					provider: ['gemini'],
+				},
+			},
+		},
+		{
+			displayName: 'Ollama URL',
+			name: 'ollamaUrl',
+			type: 'string' as NodePropertyTypes,
+			default: 'http://localhost:11434',
+			placeholder: 'E.g. http://localhost:11434',
+			displayOptions: {
+				show: {
+					provider: ['ollama'],
 				},
 			},
 		},

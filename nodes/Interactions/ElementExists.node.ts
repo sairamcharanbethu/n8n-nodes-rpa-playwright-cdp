@@ -10,7 +10,7 @@ export class ElementExists implements INodeType {
     name: 'elementExists',
     group: ['validation'],
     version: 1,
-    description: 'Checks if at least one element exists for a CSS selector.',
+    description: 'Checks if at least one element exists for a selector (CSS, XPath, Text, etc.).',
     defaults: { name: 'Element Exists' },
     inputs: [NodeConnectionType.Main],
     outputs: [NodeConnectionType.Main],
@@ -24,11 +24,13 @@ export class ElementExists implements INodeType {
         required: true,
       },
       {
-        displayName: 'CSS Selector',
+        displayName: 'Selector',
         name: 'selector',
         type: 'string',
         default: '',
         required: true,
+        placeholder: 'E.g. #submit, text=Submit, xpath=//button',
+        description: 'Selector (CSS, XPath, Text, etc.) to find the target element',
       },
       {
         displayName: 'Timeout (ms)',
