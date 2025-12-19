@@ -7,6 +7,7 @@ import {
 } from 'n8n-workflow';
 import { chromium, Browser, Page } from 'playwright';
 import { SessionObject } from '../../utils/SessionObject';
+import { neuralHeuristic } from '../../utils/NeuralHeuristic';
 import axios from 'axios';
 
 export class FindElementByDescription implements INodeType {
@@ -147,11 +148,21 @@ export class FindElementByDescription implements INodeType {
         },
       },
       {
+        displayName: 'Use Local Neural Heuristic (Fast ML)',
+        name: 'useNeuralHeuristic',
+        type: 'boolean',
+        default: true,
+        description: 'Use a local ML model for semantic matching before calling external AI. Faster and cheaper.',
+        displayOptions: {
+          hide: { discoveryMode: [true] },
+        },
+      },
+      {
         displayName: 'Use AI Fallback',
         name: 'useAI',
         type: 'boolean',
         default: true,
-        description: 'Whether to use AI if heuristic search fails',
+        description: 'Whether to use external AI if heuristic search fails',
         displayOptions: {
           hide: { discoveryMode: [true] },
         },
@@ -235,6 +246,7 @@ export class FindElementByDescription implements INodeType {
       const maxAttempts = this.getNodeParameter('maxAttempts', i, 3) as number;
       const discoveryMode = this.getNodeParameter('discoveryMode', i, false) as boolean;
       const heuristicSearch = this.getNodeParameter('heuristicSearch', i, true) as boolean;
+      const useNeuralHeuristic = this.getNodeParameter('useNeuralHeuristic', i, true) as boolean;
       const useAI = this.getNodeParameter('useAI', i, true) as boolean;
       const semanticValidation = this.getNodeParameter('semanticValidation', i, true) as boolean;
       const elementType = this.getNodeParameter('elementType', i, 'auto') as string;
@@ -327,7 +339,7 @@ export class FindElementByDescription implements INodeType {
           return `${t.tagName}:nth-of-type(${parseInt(t.index) + 1})`;
         };
 
-        // 1. Heuristic Search (Prioritized unique matches)
+        // 1. Heuristic Search
         if (heuristicSearch) {
           const descLower = description.toLowerCase();
           const genericTerms = ['field', 'input', 'button', 'link', 'dropdown', 'select', 'box', 'area', 'label', 'user', 'the'];
@@ -335,20 +347,15 @@ export class FindElementByDescription implements INodeType {
           const squashedDesc = descLower.replace(/[\s\-_]/g, '');
 
           let exactMatches: any[] = [];
-          let fuzzyMatches: any[] = [];
 
           for (const cand of candidates) {
             const atts = [cand.id, cand.name, cand.placeholder, cand.text, cand.ariaLabel, cand.href, cand.title, cand.alt].map(v => String(v || '').toLowerCase());
             const squashedAtts = atts.map(a => a.replace(/[\s\-_]/g, ''));
-
             if (atts.some(v => v === descLower) || (squashedDesc.length > 3 && squashedAtts.some(v => v.includes(squashedDesc)))) {
                exactMatches.push(cand);
-            } else if (keywords.length > 0 && keywords.every(kw => atts.some(a => a.includes(kw)))) {
-               fuzzyMatches.push(cand);
             }
           }
 
-          // If unique exact match, trust it immediately (Fast Path)
           if (exactMatches.length === 1) {
              const sel = constructRobustSelector(exactMatches[0]);
              const count = await page.evaluate((s) => (globalThis as any).document.querySelectorAll(s).length, sel);
@@ -356,20 +363,38 @@ export class FindElementByDescription implements INodeType {
                selector = sel; validated = true; confidence = 0.99; reasoning = `Heuristic Fast Path: Unique exact match for "${description}".`;
              }
           }
-
-          if (!validated && (exactMatches.length > 0 || fuzzyMatches.length > 0)) {
-            const topCand = exactMatches.length > 0 ? exactMatches[0] : fuzzyMatches[0];
-            const sel = constructRobustSelector(topCand);
-            const count = await page.evaluate((s) => (globalThis as any).document.querySelectorAll(s).length, sel);
-            if (count === 1) {
-               if (await runSemanticValidation(sel)) {
-                  selector = sel; validated = true; confidence = 0.95; reasoning = `Heuristic validated match: Unique element for "${description}".`;
-               }
-            }
-          }
         }
 
-        // 2. AI Search (Only if Heuristic failed)
+        // 2. Neural Heuristic (Local ML)
+        if (!validated && useNeuralHeuristic) {
+          try {
+            const descEmb = await neuralHeuristic.getEmbedding(description);
+            let bestCand = null;
+            let maxSim = 0;
+
+            for (const cand of candidates) {
+              const candText = `${cand.id} ${cand.name} ${cand.placeholder} ${cand.text} ${cand.ariaLabel} ${cand.title} ${cand.alt}`.toLowerCase();
+              const candEmb = await neuralHeuristic.getEmbedding(candText);
+              const sim = neuralHeuristic.cosineSimilarity(descEmb, candEmb);
+              if (sim > maxSim) {
+                maxSim = sim;
+                bestCand = cand;
+              }
+            }
+
+            if (bestCand && maxSim > 0.8) {
+              const sel = constructRobustSelector(bestCand);
+              const count = await page.evaluate((s) => (globalThis as any).document.querySelectorAll(s).length, sel);
+              if (count === 1) {
+                if (await runSemanticValidation(sel)) {
+                  selector = sel; validated = true; confidence = maxSim; reasoning = `Neural Heuristic (Local ML): Semantic match found (similarity: ${maxSim.toFixed(2)}).`;
+                }
+              }
+            }
+          } catch (e) { console.error('Neural heuristic failed:', e); }
+        }
+
+        // 3. AI Search Fallback
         if (!validated && useAI) {
           const rawHTML = await page.evaluate(() => (globalThis as any).document.body.innerHTML);
           let bodyHTML = rawHTML.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '').replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '').replace(/<!--[\s\S]*?-->/g, '');
@@ -398,22 +423,6 @@ export class FindElementByDescription implements INodeType {
                  }
               }
             } catch (e) { reasoning = `AI Error: ${(e as Error).message}`; }
-          }
-
-          if (!validated && candidates.length > 0) {
-            const semPrompt = `Which element matches "${description}"? Candidates: ${JSON.stringify(candidates.slice(0, 50).map(c => ({...c, rect: undefined})))}\nReturn JSON: { "index": number, "reasoning": "..." }`;
-            try {
-              const start = Date.now();
-              const resp = await axios.post(aiProvider === 'gemini' ? `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${credentials.googleApiKey}` : (aiProvider === 'ollama' ? `${ollamaUrl}/api/chat` : (aiProvider === 'openai' ? 'https://api.openai.com/v1/chat/completions' : 'https://openrouter.ai/api/v1/chat/completions')), (aiProvider === 'gemini' ? { contents: [{ parts: [{ text: semPrompt }] }] } : { model, messages: [{ role: 'user', content: semPrompt }], stream: false }), { headers: { Authorization: credentials.apiKey ? `Bearer ${credentials.apiKey}` : undefined, 'Content-Type': 'application/json' } });
-              aiStats.totalDurationMs += Date.now() - start; aiStats.apiCalls++;
-              let content = aiProvider === 'gemini' ? resp.data.candidates?.[0]?.content?.parts?.[0]?.text : (aiProvider === 'ollama' ? resp.data.message?.content : resp.data.choices?.[0]?.message?.content);
-              const p = parseAiJson(content);
-              if (p.index !== undefined) {
-                const t = candidates[p.index];
-                const sel = constructRobustSelector(t);
-                if (await page.$(sel)) { selector = sel; validated = true; reasoning = `Semantic match: ${p.reasoning}`; }
-              }
-            } catch {}
           }
         }
       } catch (e) { reasoning = `Execution Error: ${(e as Error).message}`; }

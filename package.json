@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@types/node": "^22.18.1",
+    "@xenova/transformers": "^2.17.2",
     "gulp": "^4.0.2",
     "n8n-workflow": "^1.82.0",
     "playwright": "^1.55.0",
