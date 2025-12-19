@@ -209,7 +209,7 @@ export class FindElementByDescription implements INodeType {
         case 'button': relevant = html.match(/<button[^>]*>[\s\S]*?<\/button>/gi)?.join('\n') || ''; break;
         case 'select': relevant = html.match(/<select[^>]*>[\s\S]*?<\/select>/gi)?.join('\n') || ''; break;
         case 'checkbox': relevant = html.match(/<input[^>]*type=["']?checkbox["']?[^>]*>/gi)?.join('\n') || ''; break;
-        case 'radio': relevant = html.match(/<input[^>]*type=["']?radio["']?[^>]*>/gi)?.join('\n') || ''; break;
+        case 'radio': relevant = html.match(/<input[^>]*type=["']? radio["']?[^>]*>/gi)?.join('\n') || ''; break;
         case 'textarea': relevant = html.match(/<textarea[^>]*>[\s\S]*?<\/textarea>/gi)?.join('\n') || ''; break;
         case 'div': relevant = html.match(/<div[^>]*>[\s\S]*?<\/div>/gi)?.join('\n') || ''; break;
         case 'a': relevant = html.match(/<a[^>]*>[\s\S]*?<\/a>/gi)?.join('\n') || ''; break;
@@ -300,8 +300,10 @@ export class FindElementByDescription implements INodeType {
           else if (aiProvider === 'ollama') vBody = { model, messages: [{ role: 'user', content: vPrompt }], stream: false, options: { temperature: 0.1 } };
 
           try {
+            const vStart = Date.now();
             const vResp = await axios.post(aiProvider === 'gemini' ? `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${credentials.googleApiKey}` : (aiProvider === 'ollama' ? `${ollamaUrl}/api/chat` : (aiProvider === 'openai' ? 'https://api.openai.com/v1/chat/completions' : 'https://openrouter.ai/api/v1/chat/completions')), vBody, { headers: { Authorization: credentials.apiKey ? `Bearer ${credentials.apiKey}` : undefined, 'Content-Type': 'application/json' } });
             aiStats.apiCalls++;
+            aiStats.totalDurationMs += Date.now() - vStart;
             let vContent = aiProvider === 'gemini' ? vResp.data.candidates?.[0]?.content?.parts?.[0]?.text : (aiProvider === 'ollama' ? vResp.data.message?.content : vResp.data.choices?.[0]?.message?.content);
             const vp = parseAiJson(vContent);
             return !!vp.matches;
@@ -325,62 +327,84 @@ export class FindElementByDescription implements INodeType {
           return `${t.tagName}:nth-of-type(${parseInt(t.index) + 1})`;
         };
 
-        // 1. Heuristic Search
+        // 1. Heuristic Search (Prioritized unique matches)
         if (heuristicSearch) {
           const descLower = description.toLowerCase();
           const keywords = descLower.split(/\s+/).filter(w => w.length > 2);
+
+          let exactMatches: any[] = [];
+          let fuzzyMatches: any[] = [];
+
           for (const cand of candidates) {
             const atts = [cand.id, cand.name, cand.placeholder, cand.text, cand.ariaLabel, cand.href, cand.title, cand.alt].map(v => String(v || '').toLowerCase());
-            const isExact = atts.some(v => v === descLower);
-            const isFuzzy = keywords.length > 0 && keywords.every(kw => atts.some(a => a.includes(kw)));
-            if (isExact || isFuzzy) {
-              const sel = constructRobustSelector(cand);
-              const count = await page.evaluate((s) => (globalThis as any).document.querySelectorAll(s).length, sel);
-              if (count === 1) {
-                if (await runSemanticValidation(sel)) { selector = sel; validated = true; confidence = isExact ? 0.98 : 0.85; reasoning = `Heuristic match (${isExact ? 'exact' : 'fuzzy'}): Unique element found via ${sel}.`; break; }
-              }
+            if (atts.some(v => v === descLower)) {
+               exactMatches.push(cand);
+            } else if (keywords.length > 0 && keywords.every(kw => atts.some(a => a.includes(kw)))) {
+               fuzzyMatches.push(cand);
             }
-            if (validated) break;
+          }
+
+          // If unique exact match, trust it immediately (Fast Path)
+          if (exactMatches.length === 1) {
+             const sel = constructRobustSelector(exactMatches[0]);
+             const count = await page.evaluate((s) => (globalThis as any).document.querySelectorAll(s).length, sel);
+             if (count === 1) {
+               selector = sel; validated = true; confidence = 0.99; reasoning = `Heuristic Fast Path: Unique exact match found for "${description}".`;
+             }
+          }
+
+          // If multiple exact/fuzzy matches, pick the first one and validate ONLY once
+          if (!validated && (exactMatches.length > 0 || fuzzyMatches.length > 0)) {
+            const topCand = exactMatches.length > 0 ? exactMatches[0] : fuzzyMatches[0];
+            const sel = constructRobustSelector(topCand);
+            const count = await page.evaluate((s) => (globalThis as any).document.querySelectorAll(s).length, sel);
+            if (count === 1) {
+               // Only validate ONCE for the top candidate
+               if (await runSemanticValidation(sel)) {
+                  selector = sel; validated = true; confidence = 0.95; reasoning = `Heuristic validated match: Unique element for "${description}".`;
+               }
+            }
           }
         }
 
-        // 2. AI Search
+        // 2. AI Search (Only if Heuristic failed)
         if (!validated && useAI) {
-          const rawHTML = await page.content();
+          const rawHTML = await page.evaluate(() => (globalThis as any).document.body.innerHTML); // Faster than page.content()
           let bodyHTML = rawHTML.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '').replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '').replace(/<!--[\s\S]*?-->/g, '');
-          bodyHTML = bodyHTML.match(/<body[^>]*>([\s\S]*)<\/body>/i)?.[1] || bodyHTML;
           bodyHTML = getRelevantHTMLByType(bodyHTML, elementType, 35000);
-          const chunks = [bodyHTML];
-          for (const chunk of chunks) {
-            let attempt = 0;
-            while (attempt < maxAttempts && !validated) {
-              attempt++;
-              const prompt = `Task: Find a ROBUST CSS selector for: "${description}". URL: ${await page.url()}\nAvoid using :nth-of-type() or :nth-child() if ANY other attribute (ID, Name, Href, Data-*, etc) can uniquely identify the element.\nReturn ONLY JSON: { "selector": "...", "confidence": 0.9, "reasoning": "...", "alternatives": [] }\nHTML: ${getRelevantHTML(chunk, 15000)}`;
-              let body: any = {};
-              if (aiProvider === 'openai' || aiProvider === 'openrouter') body = { model, messages: [{ role: 'user', content: prompt }], temperature: 0.1 };
-              else if (aiProvider === 'gemini') body = { contents: [{ parts: [{ text: prompt }] }] };
-              else if (aiProvider === 'ollama') body = { model, messages: [{ role: 'user', content: prompt }], stream: false, options: { temperature: 0.1 } };
-              try {
-                const start = Date.now();
-                const resp = await axios.post(aiProvider === 'gemini' ? `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${credentials.googleApiKey}` : (aiProvider === 'ollama' ? `${ollamaUrl}/api/chat` : (aiProvider === 'openai' ? 'https://api.openai.com/v1/chat/completions' : 'https://openrouter.ai/api/v1/chat/completions')), body, { headers: { Authorization: credentials.apiKey ? `Bearer ${credentials.apiKey}` : undefined, 'Content-Type': 'application/json' } });
-                aiStats.totalDurationMs += Date.now() - start; aiStats.apiCalls++;
-                let content = aiProvider === 'gemini' ? resp.data.candidates?.[0]?.content?.parts?.[0]?.text : (aiProvider === 'ollama' ? resp.data.message?.content : resp.data.choices?.[0]?.message?.content);
-                const parsed = parseAiJson(content);
-                selector = parsed.selector; confidence = parsed.confidence; reasoning = parsed.reasoning; alternatives = parsed.alternatives || [];
-                for (const sel of [selector, ...alternatives]) {
-                  if (!sel) continue;
-                  if (await runSemanticValidation(sel)) { selector = sel; validated = true; break; }
-                }
-              } catch (e) { reasoning = `AI Error: ${(e as Error).message}`; }
-            }
-            if (validated) break;
+
+          let attempt = 0;
+          while (attempt < maxAttempts && !validated) {
+            attempt++;
+            const prompt = `Task: Find a ROBUST CSS selector for: "${description}". URL: ${await page.url()}\nAvoid using :nth-of-type() or :nth-child() if ANY other attribute (ID, Name, Href, Data-*, etc) can uniquely identify the element.\nReturn ONLY JSON: { "selector": "...", "confidence": 0.9, "reasoning": "...", "alternatives": [] }\nHTML: ${getRelevantHTML(bodyHTML, 15000)}`;
+            let body: any = {};
+            if (aiProvider === 'openai' || aiProvider === 'openrouter') body = { model, messages: [{ role: 'user', content: prompt }], temperature: 0.1 };
+            else if (aiProvider === 'gemini') body = { contents: [{ parts: [{ text: prompt }] }] };
+            else if (aiProvider === 'ollama') body = { model, messages: [{ role: 'user', content: prompt }], stream: false, options: { temperature: 0.1 } };
+
+            try {
+              const start = Date.now();
+              const resp = await axios.post(aiProvider === 'gemini' ? `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${credentials.googleApiKey}` : (aiProvider === 'ollama' ? `${ollamaUrl}/api/chat` : (aiProvider === 'openai' ? 'https://api.openai.com/v1/chat/completions' : 'https://openrouter.ai/api/v1/chat/completions')), body, { headers: { Authorization: credentials.apiKey ? `Bearer ${credentials.apiKey}` : undefined, 'Content-Type': 'application/json' } });
+              aiStats.totalDurationMs += Date.now() - start; aiStats.apiCalls++;
+              let content = aiProvider === 'gemini' ? resp.data.candidates?.[0]?.content?.parts?.[0]?.text : (aiProvider === 'ollama' ? resp.data.message?.content : resp.data.choices?.[0]?.message?.content);
+              const parsed = parseAiJson(content);
+
+              const candidatesToTry = [parsed.selector, ...(parsed.alternatives || [])].filter(Boolean);
+              for (const sel of candidatesToTry) {
+                 if (await runSemanticValidation(sel)) {
+                    selector = sel; confidence = parsed.confidence; reasoning = parsed.reasoning; validated = true; break;
+                 }
+              }
+            } catch (e) { reasoning = `AI Error: ${(e as Error).message}`; }
           }
 
-          // 3. Semantic Fallback
+          // 3. Semantic Fallback (Lowest priority)
           if (!validated && candidates.length > 0) {
             const semPrompt = `Which element matches "${description}"? Candidates: ${JSON.stringify(candidates.slice(0, 50).map(c => ({...c, rect: undefined})))}\nReturn JSON: { "index": number, "reasoning": "..." }`;
             try {
+              const start = Date.now();
               const resp = await axios.post(aiProvider === 'gemini' ? `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${credentials.googleApiKey}` : (aiProvider === 'ollama' ? `${ollamaUrl}/api/chat` : (aiProvider === 'openai' ? 'https://api.openai.com/v1/chat/completions' : 'https://openrouter.ai/api/v1/chat/completions')), (aiProvider === 'gemini' ? { contents: [{ parts: [{ text: semPrompt }] }] } : { model, messages: [{ role: 'user', content: semPrompt }], stream: false }), { headers: { Authorization: credentials.apiKey ? `Bearer ${credentials.apiKey}` : undefined, 'Content-Type': 'application/json' } });
+              aiStats.totalDurationMs += Date.now() - start; aiStats.apiCalls++;
               let content = aiProvider === 'gemini' ? resp.data.candidates?.[0]?.content?.parts?.[0]?.text : (aiProvider === 'ollama' ? resp.data.message?.content : resp.data.choices?.[0]?.message?.content);
               const p = parseAiJson(content);
               if (p.index !== undefined) {
